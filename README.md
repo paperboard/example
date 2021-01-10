@@ -6,4 +6,5 @@ Basic Usage
 These examples demonstrate initialization and basic usage. They have the bare minimum code needed.
 
 -	[`gl41core-cube`](gl41core-cube) - Renders a textured spinning cube using GLFW 3 and OpenGL 4.1 core forward-compatible profile.
+-	[`gl32-cube`](gl32-cube) - Renders a textured spinning cube using GLFW 3 and OpenGL 3.2.
 -	[`gl21-cube`](gl21-cube) - Renders a textured spinning cube using GLFW 3 and OpenGL 2.1.
