@@ -2,13 +2,11 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Renders a textured spinning cube using GLFW 3 and OpenGL 2.1.
+// Renders a textured spinning cube using GLFW 3 and OpenGL 3.2.
 package main // import "github.com/go-gl/example/gl21-cube"
 
 import (
 	"go/build"
-	"image"
-	"image/draw"
 	_ "image/png"
 	"log"
 	"os"
@@ -50,8 +48,10 @@ func main() {
 		panic(err)
 	}
 
-	texture = newTexture("square.png")
-	defer gl.DeleteTextures(1, &texture)
+	/*
+		texture = newTexture("square.png")
+		defer gl.DeleteTextures(1, &texture)
+	*/
 
 	setupScene()
 	for !window.ShouldClose() {
@@ -61,6 +61,7 @@ func main() {
 	}
 }
 
+/*
 func newTexture(file string) uint32 {
 	imgFile, err := os.Open(file)
 	if err != nil {
@@ -98,22 +99,23 @@ func newTexture(file string) uint32 {
 
 	return texture
 }
+*/
 
 func setupScene() {
 	gl.Enable(gl.DEPTH_TEST)
-	gl.Enable(gl.LIGHTING)
+	//gl.Enable(gl.LIGHTING)
 
 	gl.ClearColor(0.5, 0.5, 0.5, 0.0)
 	gl.ClearDepth(1)
 	gl.DepthFunc(gl.LEQUAL)
 
-	ambient := []float32{0.5, 0.5, 0.5, 1}
-	diffuse := []float32{1, 1, 1, 1}
-	lightPosition := []float32{-5, 5, 10, 0}
-	gl.Lightfv(gl.LIGHT0, gl.AMBIENT, &ambient[0])
-	gl.Lightfv(gl.LIGHT0, gl.DIFFUSE, &diffuse[0])
-	gl.Lightfv(gl.LIGHT0, gl.POSITION, &lightPosition[0])
-	gl.Enable(gl.LIGHT0)
+	// ambient := []float32{0.5, 0.5, 0.5, 1}
+	// diffuse := []float32{1, 1, 1, 1}
+	// lightPosition := []float32{-5, 5, 10, 0}
+	// gl.Lightfv(gl.LIGHT0, gl.AMBIENT, &ambient[0])
+	// gl.Lightfv(gl.LIGHT0, gl.DIFFUSE, &diffuse[0])
+	// gl.Lightfv(gl.LIGHT0, gl.POSITION, &lightPosition[0])
+	// gl.Enable(gl.LIGHT0)
 
 	gl.MatrixMode(gl.PROJECTION)
 	gl.LoadIdentity()
@@ -138,7 +140,7 @@ func drawScene() {
 	rotationX += 0.5
 	rotationY += 0.5
 
-	gl.BindTexture(gl.TEXTURE_2D, texture)
+	//gl.BindTexture(gl.TEXTURE_2D, texture)
 
 	gl.Color4f(1, 1, 1, 1)
 
