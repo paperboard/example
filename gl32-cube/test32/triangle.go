@@ -206,10 +206,10 @@ uniform mat4 projection;  //in
 uniform mat4 camera;      //in
 uniform mat4 model;       //in
 
-in vec3 vert;      //in
-in vec3 vertColor; //in
+in vec3 vert;
+in vec3 vertColor;
 
-out vec3 fragColor;   //out
+out vec3 fragColor;
 
 void main() {
 	fragColor = vertColor;
@@ -220,8 +220,8 @@ void main() {
 var fragmentShader = `
 #version 330
 
-in vec3 fragColor;   //in
-out vec4 outputColor; //out
+in vec3 fragColor;
+out vec4 outputColor;
 
 void main() {
 	outputColor = vec4(fragColor, 1);
