@@ -93,7 +93,7 @@ func draw() {
 	v0 := [3]float32{(windowWidth * 0.5), (windowHeight * 0.5), -1}   // v0 = top-right
 	v1 := [3]float32{-(windowWidth * 0.5), (windowHeight * 0.5), -1}  // v1 = top-left
 	v2 := [3]float32{-(windowWidth * 0.5), -(windowHeight * 0.5), -1} // v2 = bottom-left
-	v3 := [3]float32{(windowWidth * 0.5), -(windowHeight * 0.5), -1}  // v2 = bottom-right
+	v3 := [3]float32{(windowWidth * 0.5), -(windowHeight * 0.5), -1}  // v3 = bottom-right
 
 	// draw red triangle on first-half of diagonal screen
 	gl.Color4f(1, 0, 0, 1)
