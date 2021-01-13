@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strings"
 
 	"github.com/go-gl/gl/v2.1/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
+	"github.com/go-gl/mathgl/mgl32"
 )
 
 const (
@@ -19,8 +21,11 @@ const (
 )
 
 var (
-	vbo uint32
-	ibo uint32
+	program              uint32
+	vbo                  uint32
+	ibo                  uint32
+	attribVertexPosition uint32
+	attribVertexColor    uint32
 )
 
 func init() {
@@ -77,6 +82,19 @@ func main() {
 
 func setup() {
 
+	var err error
+
+	// configure program, load shaders, and link attributes
+	program, err = newProgram(vertexShader, fragmentShader, []string{"vertexPosition", "vertexColor"})
+	if err != nil {
+		panic(err)
+	}
+	gl.UseProgram(program)
+
+	// get attribute index for later use
+	attribVertexPosition = uint32(gl.GetAttribLocation(program, gl.Str("vertexPosition\x00")))
+	attribVertexColor = uint32(gl.GetAttribLocation(program, gl.Str("vertexColor\x00")))
+
 	// cleared background color = gray
 	gl.ClearColor(0.5, 0.5, 0.5, 1)
 
@@ -122,35 +140,32 @@ var quadIndices = []int32{
 
 func draw() {
 
+	// bind program
+	gl.UseProgram(program)
+
 	// gl.Begin()
-	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)         // bind vertex buffer
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo) // bind indices buffer
-	gl.EnableClientState(gl.VERTEX_ARRAY)       // enable vertex position
-	gl.EnableClientState(gl.COLOR_ARRAY)        // enable vertex color
+	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)              // bind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo)      // bind indices buffer
+	gl.EnableVertexAttribArray(attribVertexPosition) // enable vertex position
+	gl.EnableVertexAttribArray(attribVertexColor)    // enable vertex color
 
 	// configure and enable vertex position
-	gl.VertexPointer(vertexPositionSize, gl.FLOAT, vertexSize*floatSizeInBytes, gl.PtrOffset(0*floatSizeInBytes))
+	gl.VertexAttribPointer(attribVertexPosition, vertexPositionSize, gl.FLOAT, false, vertexSize*floatSizeInBytes, gl.PtrOffset(0*floatSizeInBytes)) // PtrOffset = 0
 
 	// configure and enable vertex color
-	gl.ColorPointer(vertexColorSize, gl.FLOAT, vertexSize*floatSizeInBytes, gl.PtrOffset(vertexPositionSize*floatSizeInBytes))
+	gl.VertexAttribPointer(attribVertexColor, vertexColorSize, gl.FLOAT, false, vertexSize*floatSizeInBytes, gl.PtrOffset(vertexPositionSize*floatSizeInBytes)) // PtrOffset = 12
 
 	// draw triangles
 	gl.DrawElements(gl.TRIANGLES, int32(len(quadIndices)), gl.UNSIGNED_INT, gl.PtrOffset(0*floatSizeInBytes))
 
 	// gl.End()
-	gl.BindBuffer(gl.ARRAY_BUFFER, 0)         // unbind vertex buffer
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0) // unbind indices buffer
-	gl.DisableClientState(gl.VERTEX_ARRAY)    // disable vertex position
-	gl.DisableClientState(gl.COLOR_ARRAY)     // disable vertex color
+	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                 // unbind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)         // unbind indices buffer
+	gl.DisableVertexAttribArray(attribVertexPosition) // disable vertex position
+	gl.DisableVertexAttribArray(attribVertexColor)    // disable vertex color
 
 	// check for accumulated OpenGL errors
-	for {
-		glerr := gl.GetError()
-		if glerr == gl.NO_ERROR {
-			break
-		}
-		print_GL_ERROR(glerr)
-	}
+	checkGLError()
 
 }
 
@@ -207,27 +222,130 @@ func setupBuffers() {
 // http://relativity.net.au/gaming/java/ProjectionMatrix.html
 // https://www.sciencedirect.com/topics/computer-science/device-coordinate
 // https://learnopengl.com/Getting-started/Coordinate-Systems
+// https://learnopengl.com/Getting-started/Camera
 func setupCamera() {
 
 	// from the viewpoint of the camera at centerpoint (0,0,0)
-	frustumLeft := -windowWidth * 0.5
-	frustumRight := windowWidth * 0.5
-	frustumBottom := -windowHeight * 0.5
-	frustumTop := windowHeight * 0.5
+	frustumLeft := -float32(windowWidth) * 0.5
+	frustumRight := float32(windowWidth) * 0.5
+	frustumBottom := -float32(windowHeight) * 0.5
+	frustumTop := float32(windowHeight) * 0.5
 
 	// CREATE (PRESPECTIVE) PROJECTION MATRIX
 	// a matrix to transform from eye to NDC coordinates
-	gl.MatrixMode(gl.PROJECTION)                                             // bind to projection matrix
-	gl.LoadIdentity()                                                        // clear matrix by replacing with identity matrix
-	gl.Frustum(frustumLeft, frustumRight, frustumBottom, frustumTop, 1, 100) // produce projection matrix && dot product it with identity matrix
+	projection := mgl32.Frustum(frustumLeft, frustumRight, frustumBottom, frustumTop, 1, 100)
+	projectionUniform := gl.GetUniformLocation(program, gl.Str("projection\x00"))
+	gl.UniformMatrix4fv(projectionUniform, 1, false, &projection[0])
 
-	// unbind from projection matrix (as we are done)
-	// and bind to modelview matrix and clear it.
-	gl.MatrixMode(gl.MODELVIEW)
-	gl.LoadIdentity()
-	// TODO: depending on how we decide to use Object coordinate space,
-	//       we would need to set a modelview matrix to tranform from
-	//       object to eye coordinates.
+	// CREATE MODELVIEW MATRIX
+	// a matrix to transform from object to eye coordinates
+	model := mgl32.Ident4()
+	modelUniform := gl.GetUniformLocation(program, gl.Str("modelview\x00"))
+	gl.UniformMatrix4fv(modelUniform, 1, false, &model[0])
+
+}
+
+var vertexShader = `
+#version 120
+
+// input
+uniform mat4 projection;
+uniform mat4 modelview;
+
+// input
+attribute vec3 vertexPosition;
+attribute vec3 vertexColor;
+
+// output
+varying vec3 fragmentColor;
+
+void main() {
+	fragmentColor = vertexColor;
+	gl_Position = projection * modelview * vec4(vertexPosition, 1);
+}
+` + "\x00"
+
+var fragmentShader = `
+#version 120
+
+// input
+varying vec3 fragmentColor;
+
+void main() {
+	gl_FragColor = vec4(fragmentColor, 1);
+}
+` + "\x00"
+
+func newProgram(vertexShaderSource, fragmentShaderSource string, attributes []string) (uint32, error) {
+
+	vertexShader, err := compileShader(vertexShaderSource, gl.VERTEX_SHADER)
+	if err != nil {
+		return 0, err
+	}
+
+	fragmentShader, err := compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER)
+	if err != nil {
+		return 0, err
+	}
+
+	program := gl.CreateProgram()
+
+	gl.AttachShader(program, vertexShader)
+	gl.AttachShader(program, fragmentShader)
+
+	for i, name := range attributes {
+		l, free := gl.Strs(name + "\x00")
+		gl.BindAttribLocation(program, uint32(i), *l)
+		free()
+	}
+
+	gl.LinkProgram(program)
+
+	var status int32
+	gl.GetProgramiv(program, gl.LINK_STATUS, &status)
+	if status == gl.FALSE {
+
+		var logLength int32
+		gl.GetProgramiv(program, gl.INFO_LOG_LENGTH, &logLength)
+
+		log := strings.Repeat("\x00", int(logLength+1))
+		gl.GetProgramInfoLog(program, logLength, nil, gl.Str(log))
+
+		return 0, fmt.Errorf("failed to link program: %v", log)
+
+	}
+
+	gl.DeleteShader(vertexShader)
+	gl.DeleteShader(fragmentShader)
+
+	return program, nil
+
+}
+
+func compileShader(source string, shaderType uint32) (uint32, error) {
+
+	shader := gl.CreateShader(shaderType)
+
+	csources, free := gl.Strs(source)
+	gl.ShaderSource(shader, 1, csources, nil)
+	free()
+	gl.CompileShader(shader)
+
+	var status int32
+	gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
+	if status == gl.FALSE {
+
+		var logLength int32
+		gl.GetShaderiv(shader, gl.INFO_LOG_LENGTH, &logLength)
+
+		log := strings.Repeat("\x00", int(logLength+1))
+		gl.GetShaderInfoLog(shader, logLength, nil, gl.Str(log))
+
+		return 0, fmt.Errorf("failed to compile %v: %v", source, log)
+
+	}
+
+	return shader, nil
 
 }
 
@@ -242,10 +360,20 @@ var GL_ERROR_LOOKUP = map[uint32]string{
 	0x507: `GL_CONTEXT_LOST`,
 }
 
-func print_GL_ERROR(errcode uint32) {
+func panic_GL_ERROR(errcode uint32) {
 	if errstr, ok := GL_ERROR_LOOKUP[errcode]; ok {
-		fmt.Printf("GL_ERROR: %s\n", errstr)
+		panic(fmt.Sprintf("GL_ERROR: %s\n", errstr))
 	} else {
-		fmt.Printf("GL_ERROR UNKNOWN: %v\n", errcode)
+		panic(fmt.Sprintf("GL_ERROR UNKNOWN: %v\n", errcode))
+	}
+}
+
+func checkGLError() {
+	for {
+		glerr := gl.GetError()
+		if glerr == gl.NO_ERROR {
+			break
+		}
+		panic_GL_ERROR(glerr)
 	}
 }
