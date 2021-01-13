@@ -10,8 +10,17 @@ import (
 )
 
 const (
-	windowWidth  = 600
-	windowHeight = 400
+	windowWidth        = 600
+	windowHeight       = 400
+	floatSizeInBytes   = 4 // a float32 is 4 bytes
+	vertexPositionSize = 3 // x,y,z
+	vertexColorSize    = 3 // r,g,b
+	vertexSize         = 6 // vertexPositionSize + vertexColorSize
+)
+
+var (
+	vbo uint32
+	ibo uint32
 )
 
 func init() {
@@ -71,12 +80,17 @@ func setup() {
 	// cleared background color = gray
 	gl.ClearColor(0.5, 0.5, 0.5, 1)
 
+	// clear screen
+	gl.Clear(gl.COLOR_BUFFER_BIT)
+
+	// prepare vbo/ibo buffers
+	setupBuffers()
+
 	// caculate camera matrices
 	setupCamera()
 
 }
 
-// https://www.songho.ca/opengl/gl_vbo.html#create
 // unit cube
 //
 //    v6----- v5
@@ -87,29 +101,76 @@ func setup() {
 //  |/      |/
 //  v2------v3
 //
+// vertex ( position + color ) array
+// vertexs needed for 2 triangles that cover a rectangular screen
+var quadVertices = []float32{
+	(windowWidth * 0.5), (windowHeight * 0.5), -1, // v0 position = top-right
+	0, 0, 0, // v0 color = black
+	-(windowWidth * 0.5), (windowHeight * 0.5), -1, // v1 position = top-left
+	1, 0, 0, // v1 color = red
+	-(windowWidth * 0.5), -(windowHeight * 0.5), -1, // v2 position = bottom-left
+	0, 0, 0, // v2 color = black
+	(windowWidth * 0.5), -(windowHeight * 0.5), -1, // v3 position = bottom-right
+	0, 0, 1, // v3 color = blue
+}
+
+// indices array
+var quadIndices = []int32{
+	0, 1, 2, // first triangle
+	0, 2, 3, // second triangle
+}
+
 func draw() {
 
-	// vertexs needed for 2 triangles that cover a rectangular screen
-	v0 := [3]float32{(windowWidth * 0.5), (windowHeight * 0.5), -1}   // v0 = top-right
-	v1 := [3]float32{-(windowWidth * 0.5), (windowHeight * 0.5), -1}  // v1 = top-left
-	v2 := [3]float32{-(windowWidth * 0.5), -(windowHeight * 0.5), -1} // v2 = bottom-left
-	v3 := [3]float32{(windowWidth * 0.5), -(windowHeight * 0.5), -1}  // v2 = bottom-right
+	// gl.Begin()
+	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)         // bind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo) // bind indices buffer
+	gl.EnableClientState(gl.VERTEX_ARRAY)       // enable vertex position
+	gl.EnableClientState(gl.COLOR_ARRAY)        // enable vertex color
 
-	// draw red triangle on first-half of diagonal screen
-	gl.Color4f(1, 0, 0, 1)
-	gl.Begin(gl.TRIANGLES)
-	gl.Vertex3f(v0[0], v0[1], v0[2])
-	gl.Vertex3f(v1[0], v1[1], v1[2])
-	gl.Vertex3f(v2[0], v2[1], v2[2])
-	gl.End()
+	// configure and enable vertex position
+	gl.VertexPointer(vertexPositionSize, gl.FLOAT, vertexSize*floatSizeInBytes, gl.PtrOffset(0*floatSizeInBytes))
 
-	// draw blue triangle on second-half of diagonal screen
-	gl.Color4f(0, 0, 1, 1)
-	gl.Begin(gl.TRIANGLES)
-	gl.Vertex3f(v0[0], v0[1], v0[2])
-	gl.Vertex3f(v2[0], v2[1], v2[2])
-	gl.Vertex3f(v3[0], v3[1], v3[2])
-	gl.End()
+	// configure and enable vertex color
+	gl.ColorPointer(vertexColorSize, gl.FLOAT, vertexSize*floatSizeInBytes, gl.PtrOffset(vertexPositionSize*floatSizeInBytes))
+
+	// draw triangles
+	gl.DrawElements(gl.TRIANGLES, int32(len(quadIndices)), gl.UNSIGNED_INT, gl.PtrOffset(0*floatSizeInBytes))
+
+	// gl.End()
+	gl.BindBuffer(gl.ARRAY_BUFFER, 0)         // unbind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0) // unbind indices buffer
+	gl.DisableClientState(gl.VERTEX_ARRAY)    // disable vertex position
+	gl.DisableClientState(gl.COLOR_ARRAY)     // disable vertex color
+
+	// check for accumulated OpenGL errors
+	for {
+		glerr := gl.GetError()
+		if glerr == gl.NO_ERROR {
+			break
+		}
+		print_GL_ERROR(glerr)
+	}
+
+}
+
+// https://en.wikipedia.org/wiki/Vertex_buffer_object
+// https://www.songho.ca/opengl/gl_vbo.html#create
+func setupBuffers() {
+
+	// create VBOs
+	gl.GenBuffers(1, &vbo) // for vertex buffer
+	gl.GenBuffers(1, &ibo) // for index buffer
+
+	// copy vertex data to VBO
+	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
+	gl.BufferData(gl.ARRAY_BUFFER, len(quadVertices)*floatSizeInBytes, gl.Ptr(quadVertices), gl.STATIC_DRAW)
+	gl.BindBuffer(gl.ARRAY_BUFFER, 0)
+
+	// copy index data to VBO
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo)
+	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(quadIndices)*floatSizeInBytes, gl.Ptr(quadIndices), gl.STATIC_DRAW)
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
 }
 
@@ -168,4 +229,23 @@ func setupCamera() {
 	//       we would need to set a modelview matrix to tranform from
 	//       object to eye coordinates.
 
+}
+
+var GL_ERROR_LOOKUP = map[uint32]string{
+	0x500: `GL_INVALID_ENUM`,
+	0x501: `GL_INVALID_VALUE`,
+	0x502: `GL_INVALID_OPERATION`,
+	0x503: `GL_STACK_OVERFLOW`,
+	0x504: `GL_STACK_UNDERFLOW`,
+	0x505: `GL_OUT_OF_MEMORY`,
+	0x506: `GL_INVALID_FRAMEBUFFER_OPERATION`,
+	0x507: `GL_CONTEXT_LOST`,
+}
+
+func print_GL_ERROR(errcode uint32) {
+	if errstr, ok := GL_ERROR_LOOKUP[errcode]; ok {
+		fmt.Printf("GL_ERROR: %s\n", errstr)
+	} else {
+		fmt.Printf("GL_ERROR UNKNOWN: %v\n", errcode)
+	}
 }
