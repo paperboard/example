@@ -85,7 +85,7 @@ func setup() {
 	var err error
 
 	// configure program, load shaders, and link attributes
-	program, err = newProgram(vertexShader, fragmentShader, []string{"vertexPosition", "vertexColor"})
+	program, err = newProgram(vertexShader, fragmentShader)
 	if err != nil {
 		panic(err)
 	}
@@ -276,7 +276,7 @@ void main() {
 }
 ` + "\x00"
 
-func newProgram(vertexShaderSource, fragmentShaderSource string, attributes []string) (uint32, error) {
+func newProgram(vertexShaderSource, fragmentShaderSource string) (uint32, error) {
 
 	vertexShader, err := compileShader(vertexShaderSource, gl.VERTEX_SHADER)
 	if err != nil {
@@ -292,13 +292,6 @@ func newProgram(vertexShaderSource, fragmentShaderSource string, attributes []st
 
 	gl.AttachShader(program, vertexShader)
 	gl.AttachShader(program, fragmentShader)
-
-	for i, name := range attributes {
-		l, free := gl.Strs(name + "\x00")
-		gl.BindAttribLocation(program, uint32(i), *l)
-		free()
-	}
-
 	gl.LinkProgram(program)
 
 	var status int32
