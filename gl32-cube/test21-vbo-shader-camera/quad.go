@@ -119,8 +119,8 @@ var quadVertices = make([]float32, 0, 100) // size 100 doesn't matter
 var quadColors = make([]uint32, 0, 100)
 var quadIndices = make([]uint32, 0, 100)
 
-func makeRectangle(w int, h int, z int, c color.Color) {
-	quadVertices = append(quadVertices, makeQuadVertices(float32(w), float32(h), float32(z))...)
+func makeRectangle(w float32, h float32, z float32, c color.Color) {
+	quadVertices = append(quadVertices, makeQuadVertices(w, h, z)...)
 	quadColors = append(quadColors, makeQuadColors(c.RGBA())...)
 	quadIndices = append(quadIndices, makeQuadIndices()...)
 }
@@ -160,10 +160,10 @@ func quadDebugPrint() {
 func load() {
 
 	// make red rectangle
-	makeRectangle(1000, 1000, -5, color.NRGBA{1, 0, 0, 1})
+	makeRectangle(2, 2, -1, color.NRGBA{1, 0, 0, 1})
 
 	// make blue rectangle
-	makeRectangle(600, 600, -5, color.NRGBA{0, 0, 1, 1})
+	makeRectangle(1, 1, -1, color.NRGBA{0, 0, 1, 1})
 
 	// print debug info for shapes
 	quadDebugPrint()
@@ -271,6 +271,7 @@ func setupProgram() {
 // of scaling and translating the NDC by viewport parameters
 // given to gl.Viewport() and gl.DepthRange() functions.
 //
+// http://www.opengl-tutorial.org/beginners-tutorials/tutorial-3-matrices/#the-model-matrix
 // https://www.opengl.org/archives/resources/faq/technical/transformations.htm
 // http://math.hws.edu/graphicsbook/c3/s3.html (INTERACTIVE)
 // https://stackoverflow.com/questions/15588860/what-exactly-are-eye-space-coordinates
@@ -280,6 +281,8 @@ func setupProgram() {
 // https://www.sciencedirect.com/topics/computer-science/device-coordinate
 // https://learnopengl.com/Getting-started/Coordinate-Systems
 // https://learnopengl.com/Getting-started/Camera
+// https://stackoverflow.com/questions/59262874/how-can-i-use-screen-space-coordinates-directly-with-opengl
+// https://www.codeguru.com/cpp/misc/misc/graphics/article.php/c10123/Deriving-Projection-Matrices.htm#page-2
 func setupCamera() {
 
 	// do not render parts of shapes (pixels) that will
@@ -291,22 +294,25 @@ func setupCamera() {
 	// draw order in account and show if possible
 	gl.DepthFunc(gl.LEQUAL)
 
-	// from the viewpoint of the camera at centerpoint (0,0,0)
-	frustumLeft := -float32(windowWidth) * 0.5
-	frustumRight := float32(windowWidth) * 0.5
-	frustumBottom := -float32(windowHeight) * 0.5
-	frustumTop := float32(windowHeight) * 0.5
-
 	// CREATE (PRESPECTIVE) PROJECTION MATRIX
 	// a matrix to transform from eye to NDC coordinates
-	projection := mgl32.Frustum(frustumLeft, frustumRight, frustumBottom, frustumTop, 1, 100)
+	projection := mgl32.Perspective(mgl32.DegToRad(90), float32(windowWidth)/windowHeight, 1, 100)
 	projectionUniform := gl.GetUniformLocation(program, gl.Str("projection\x00"))
 	gl.UniformMatrix4fv(projectionUniform, 1, false, &projection[0])
 
-	// CREATE MODELVIEW MATRIX
+	// CREATE (CAMERA) VIEW MATRIX
+	// a matrix to transform from eye to NDC coordinates
+	// 1st arg = camera position
+	// 2nd arg = camera directional vector
+	// 3rd arg = up is Y axis
+	camera := mgl32.LookAtV(mgl32.Vec3{0, 0, 0}, mgl32.Vec3{0, 0, -1}, mgl32.Vec3{0, 1, 0})
+	cameraUniform := gl.GetUniformLocation(program, gl.Str("camera\x00"))
+	gl.UniformMatrix4fv(cameraUniform, 1, false, &camera[0])
+
+	// CREATE (OBJECT) MODEL MATRIX
 	// a matrix to transform from object to eye coordinates
 	model := mgl32.Ident4()
-	modelUniform := gl.GetUniformLocation(program, gl.Str("modelview\x00"))
+	modelUniform := gl.GetUniformLocation(program, gl.Str("model\x00"))
 	gl.UniformMatrix4fv(modelUniform, 1, false, &model[0])
 
 }
@@ -316,7 +322,8 @@ var vertexShader = `
 
 // input
 uniform mat4 projection;
-uniform mat4 modelview;
+uniform mat4 camera;
+uniform mat4 model;
 
 // input
 attribute vec3 vertexPosition;
@@ -327,7 +334,7 @@ varying vec4 fragmentColor;
 
 void main() {
 	fragmentColor = vertexColor;
-	gl_Position = projection * modelview * vec4(vertexPosition, 1);
+	gl_Position = projection * camera * model * vec4(vertexPosition, 1);
 }
 ` + "\x00"
 
