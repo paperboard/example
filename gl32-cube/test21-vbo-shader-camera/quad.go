@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"log"
 	"runtime"
 	"strings"
@@ -14,9 +15,12 @@ import (
 const (
 	windowWidth        = 600
 	windowHeight       = 400
-	floatSizeInBytes   = 4 // a float32 is 4 bytes
+	bytesFloat32       = 4 // a float32 is 4 bytes
+	bytesUint32        = 4 // a uint32 is 4 bytes
 	vertexPositionSize = 3 // x,y,z
-	vertexColorSize    = 3 // r,g,b
+	vertexColorSize    = 4 // r,g,b,a
+	verticesPerQuad    = 4 // a rectangle has 4 vertices
+	indicesPerQuad     = 6 // a rectangle has 6 indices
 )
 
 var (
@@ -60,6 +64,9 @@ func main() {
 	}
 	fmt.Println("OpenGL version", gl.GoStr(gl.GetString(gl.VERSION)))
 
+	// load game objects
+	load()
+
 	// pre-gameloop setup
 	setup()
 
@@ -85,7 +92,7 @@ func setup() {
 	gl.ClearColor(0.5, 0.5, 0.5, 1)
 
 	// clear screen
-	gl.Clear(gl.COLOR_BUFFER_BIT)
+	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
 	// create shader program
 	setupProgram()
@@ -108,11 +115,15 @@ func setup() {
 //  |/      |/
 //  v2------v3
 //
-// vertex ( position + color ) array
-// vertexs needed for 2 triangles that cover a rectangular screen
-var quadVertices = makeQuadVertices(windowWidth, windowHeight, -1)
-var quadIndices = makeQuadIndices()
-var quadColors = makeQuadColors(1, 0, 0)
+var quadVertices = make([]float32, 0, 100) // size 100 doesn't matter
+var quadColors = make([]uint32, 0, 100)
+var quadIndices = make([]uint32, 0, 100)
+
+func makeRectangle(w int, h int, z int, c color.Color) {
+	quadVertices = append(quadVertices, makeQuadVertices(float32(w), float32(h), float32(z))...)
+	quadColors = append(quadColors, makeQuadColors(c.RGBA())...)
+	quadIndices = append(quadIndices, makeQuadIndices()...)
+}
 
 func makeQuadVertices(w, h, z float32) []float32 {
 	return []float32{
@@ -123,23 +134,46 @@ func makeQuadVertices(w, h, z float32) []float32 {
 	}
 }
 
-func makeQuadIndices() []int32 {
-	return []int32{
-		0, 1, 2, // first triangle
-		0, 2, 3, // second triangle
+func makeQuadColors(r, g, b, a uint32) []uint32 {
+	return []uint32{
+		r, g, b, a,
+		r, g, b, a,
+		r, g, b, a,
+		r, g, b, a,
 	}
 }
 
-func makeQuadColors(r, g, b float32) []float32 {
-	return []float32{
-		r, g, b,
-		r, g, b,
-		r, g, b,
-		r, g, b,
+func makeQuadIndices() []uint32 {
+	rectangleCount := len(quadVertices) / (verticesPerQuad * vertexPositionSize)
+	i := uint32((rectangleCount - 1)) * verticesPerQuad
+	return []uint32{
+		i, i + 1, i + 2, // first triangle
+		i, i + 2, i + 3, // second triangle
 	}
+}
+
+func quadDebugPrint() {
+	fmt.Printf("RECT_COUNT -- Rectangles: %v\n", len(quadIndices)/indicesPerQuad)
+	fmt.Printf("RAW_LENGTH -- Rectangle has %v vertex\nVertices   %v (%v-per-vertex)\nColors     %v (%v-per-vertex)\nIndices    %v (%v-per-rectangle)\n", verticesPerQuad, len(quadVertices), vertexPositionSize, len(quadColors), vertexColorSize, len(quadIndices), indicesPerQuad)
+}
+
+func load() {
+
+	// make red rectangle
+	makeRectangle(1000, 1000, -5, color.NRGBA{1, 0, 0, 1})
+
+	// make blue rectangle
+	makeRectangle(600, 600, -5, color.NRGBA{0, 0, 1, 1})
+
+	// print debug info for shapes
+	quadDebugPrint()
+
 }
 
 func draw() {
+
+	// clear screen
+	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
 	// bind program
 	gl.UseProgram(program)
@@ -151,13 +185,13 @@ func draw() {
 	gl.EnableVertexAttribArray(attribVertexColor)    // enable vertex color
 
 	// configure and enable vertex position
-	gl.VertexAttribPointer(attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(0*floatSizeInBytes))
+	gl.VertexAttribPointer(attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(0*bytesFloat32)) // PtrOffset = vertices position start at start of array (offset = 0)
 
 	// configure and enable vertex color
-	gl.VertexAttribPointer(attribVertexColor, vertexColorSize, gl.FLOAT, false, 0, gl.PtrOffset(len(quadVertices)*floatSizeInBytes))
+	gl.VertexAttribPointer(attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(len(quadVertices)*bytesFloat32)) // PtrOffset = colors start after vertices position
 
-	// draw triangles
-	gl.DrawElements(gl.TRIANGLES, int32(len(quadIndices)), gl.UNSIGNED_INT, gl.PtrOffset(0*floatSizeInBytes))
+	// draw rectangles
+	gl.DrawElements(gl.TRIANGLES, int32(len(quadIndices)), gl.UNSIGNED_INT, gl.PtrOffset(0*bytesUint32))
 
 	// gl.End()
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                 // unbind vertex buffer
@@ -174,20 +208,23 @@ func draw() {
 // https://www.songho.ca/opengl/gl_vbo.html#create
 func setupBuffers() {
 
+	// to be more efficient, vertices position are in float32 and color is in uint32
+	bytesTotalSize := (len(quadVertices) * bytesFloat32) + (len(quadColors) * bytesUint32)
+
 	// create VBOs
 	gl.GenBuffers(1, &vbo) // for vertex buffer
 	gl.GenBuffers(1, &ibo) // for index buffer
 
 	// copy vertex data to VBO
 	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-	gl.BufferData(gl.ARRAY_BUFFER, (len(quadVertices)+len(quadColors))*floatSizeInBytes, nil, gl.STATIC_DRAW)                   // initalize but do not copy any data
-	gl.BufferSubData(gl.ARRAY_BUFFER, 0*floatSizeInBytes, len(quadVertices)*floatSizeInBytes, gl.Ptr(quadVertices))             // copy vertices starting from 0 offest
-	gl.BufferSubData(gl.ARRAY_BUFFER, len(quadVertices)*floatSizeInBytes, len(quadColors)*floatSizeInBytes, gl.Ptr(quadColors)) // copy colors after vertices
+	gl.BufferData(gl.ARRAY_BUFFER, bytesTotalSize, nil, gl.STATIC_DRAW)                                                // initalize but do not copy any data
+	gl.BufferSubData(gl.ARRAY_BUFFER, 0*bytesFloat32, len(quadVertices)*bytesFloat32, gl.Ptr(quadVertices))            // copy vertices starting from 0 offest
+	gl.BufferSubData(gl.ARRAY_BUFFER, len(quadVertices)*bytesFloat32, len(quadColors)*bytesUint32, gl.Ptr(quadColors)) // copy colors after vertices
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)
 
 	// copy index data to VBO
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo)
-	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(quadIndices)*floatSizeInBytes, gl.Ptr(quadIndices), gl.STATIC_DRAW)
+	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(quadIndices)*bytesUint32, gl.Ptr(quadIndices), gl.STATIC_DRAW)
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
 }
@@ -245,6 +282,15 @@ func setupProgram() {
 // https://learnopengl.com/Getting-started/Camera
 func setupCamera() {
 
+	// do not render parts of shapes (pixels) that will
+	// anyhow be covered up by higher z-axis shapes (pixels)
+	// so that we are drawing pixels more efficiently
+	gl.Enable(gl.DEPTH_TEST)
+
+	// if multiple shapes have same z-value, take their
+	// draw order in account and show if possible
+	gl.DepthFunc(gl.LEQUAL)
+
 	// from the viewpoint of the camera at centerpoint (0,0,0)
 	frustumLeft := -float32(windowWidth) * 0.5
 	frustumRight := float32(windowWidth) * 0.5
@@ -274,10 +320,10 @@ uniform mat4 modelview;
 
 // input
 attribute vec3 vertexPosition;
-attribute vec3 vertexColor;
+attribute vec4 vertexColor;
 
 // output
-varying vec3 fragmentColor;
+varying vec4 fragmentColor;
 
 void main() {
 	fragmentColor = vertexColor;
@@ -289,10 +335,10 @@ var fragmentShader = `
 #version 120
 
 // input
-varying vec3 fragmentColor;
+varying vec4 fragmentColor;
 
 void main() {
-	gl_FragColor = vec4(fragmentColor, 1);
+	gl_FragColor = fragmentColor;
 }
 ` + "\x00"
 
