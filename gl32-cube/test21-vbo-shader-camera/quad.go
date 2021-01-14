@@ -17,6 +17,7 @@ const (
 	windowHeight       = 400
 	bytesFloat32       = 4 // a float32 is 4 bytes
 	bytesUint32        = 4 // a uint32 is 4 bytes
+	bytesUint16        = 2 // a uint16 is 2 bytes
 	vertexPositionSize = 3 // x,y,z
 	vertexColorSize    = 4 // r,g,b,a
 	verticesPerQuad    = 4 // a rectangle has 4 vertices
@@ -117,7 +118,7 @@ func setup() {
 //
 var quadVertices = make([]float32, 0, 100) // size 100 doesn't matter
 var quadColors = make([]uint32, 0, 100)
-var quadIndices = make([]uint32, 0, 100)
+var quadIndices = make([]uint16, 0, 100)
 
 func makeRectangle(w float32, h float32, z float32, c color.Color) {
 	quadVertices = append(quadVertices, makeQuadVertices(w, h, z)...)
@@ -143,10 +144,10 @@ func makeQuadColors(r, g, b, a uint32) []uint32 {
 	}
 }
 
-func makeQuadIndices() []uint32 {
+func makeQuadIndices() []uint16 {
 	rectangleCount := len(quadVertices) / (verticesPerQuad * vertexPositionSize)
-	i := uint32((rectangleCount - 1)) * verticesPerQuad
-	return []uint32{
+	i := uint16((rectangleCount - 1)) * verticesPerQuad
+	return []uint16{
 		i, i + 1, i + 2, // first triangle
 		i, i + 2, i + 3, // second triangle
 	}
@@ -191,7 +192,7 @@ func draw() {
 	gl.VertexAttribPointer(attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(len(quadVertices)*bytesFloat32)) // PtrOffset = colors start after vertices position
 
 	// draw rectangles
-	gl.DrawElements(gl.TRIANGLES, int32(len(quadIndices)), gl.UNSIGNED_INT, gl.PtrOffset(0*bytesUint32))
+	gl.DrawElements(gl.TRIANGLES, int32(len(quadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(0*bytesUint16))
 
 	// gl.End()
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                 // unbind vertex buffer
@@ -224,7 +225,7 @@ func setupBuffers() {
 
 	// copy index data to VBO
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo)
-	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(quadIndices)*bytesUint32, gl.Ptr(quadIndices), gl.STATIC_DRAW)
+	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(quadIndices)*bytesUint16, gl.Ptr(quadIndices), gl.STATIC_DRAW)
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
 }
