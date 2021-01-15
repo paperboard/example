@@ -102,7 +102,7 @@ func setup() {
 	setupBuffers()
 
 	// caculate camera matrices
-	setupCamera()
+	setupCamera(90, mgl32.Vec3{2, 2, 2}, mgl32.Vec3{0, 0, -1})
 
 }
 
@@ -161,10 +161,10 @@ func quadDebugPrint() {
 func load() {
 
 	// make red rectangle
-	makeRectangle(2, 2, -1, color.NRGBA{1, 0, 0, 1})
+	makeRectangle(2, 2, -1.2, color.NRGBA{1, 0, 0, 1})
 
 	// make blue rectangle
-	makeRectangle(1, 1, -1, color.NRGBA{0, 0, 1, 1})
+	makeRectangle(1, 1, -1.1, color.NRGBA{0, 0, 1, 1})
 
 	// print debug info for shapes
 	quadDebugPrint()
@@ -284,7 +284,7 @@ func setupProgram() {
 // https://learnopengl.com/Getting-started/Camera
 // https://stackoverflow.com/questions/59262874/how-can-i-use-screen-space-coordinates-directly-with-opengl
 // https://www.codeguru.com/cpp/misc/misc/graphics/article.php/c10123/Deriving-Projection-Matrices.htm#page-2
-func setupCamera() {
+func setupCamera(fov float32, cameraposition mgl32.Vec3, target mgl32.Vec3) {
 
 	// do not render parts of shapes (pixels) that will
 	// anyhow be covered up by higher z-axis shapes (pixels)
@@ -297,16 +297,13 @@ func setupCamera() {
 
 	// CREATE (PRESPECTIVE) PROJECTION MATRIX
 	// a matrix to transform from eye to NDC coordinates
-	projection := mgl32.Perspective(mgl32.DegToRad(90), float32(windowWidth)/windowHeight, 1, 100)
+	projection := mgl32.Perspective(mgl32.DegToRad(fov), float32(windowWidth)/windowHeight, 0.1, 100)
 	projectionUniform := gl.GetUniformLocation(program, gl.Str("projection\x00"))
 	gl.UniformMatrix4fv(projectionUniform, 1, false, &projection[0])
 
 	// CREATE (CAMERA) VIEW MATRIX
 	// a matrix to transform from eye to NDC coordinates
-	// 1st arg = camera position
-	// 2nd arg = camera directional vector
-	// 3rd arg = up is Y axis
-	camera := mgl32.LookAtV(mgl32.Vec3{0, 0, 0}, mgl32.Vec3{0, 0, -1}, mgl32.Vec3{0, 1, 0})
+	camera := mgl32.LookAtV(cameraposition, target, mgl32.Vec3{0, 1, 0})
 	cameraUniform := gl.GetUniformLocation(program, gl.Str("camera\x00"))
 	gl.UniformMatrix4fv(cameraUniform, 1, false, &camera[0])
 
