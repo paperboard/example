@@ -25,11 +25,17 @@ const (
 )
 
 var (
-	program              uint32
-	vbo                  uint32
-	ibo                  uint32
-	attribVertexPosition uint32
-	attribVertexColor    uint32
+	program                 uint32 // connects vertex and fragment shaders (main shaders)
+	programFramebuffer      uint32 // connects vertex and fragment shaders (renderProxyToScreen shaders)
+	fbo                     uint32 // off-screen rendering using framebuffer
+	fboTexture              uint32 // texture attachment for framebuffer color component (to act as proxy for default framebuffer aka. screen)
+	fboRenderbuffer         uint32 // renderbuffer attachment for framebuffer depth & stencil components (to act as proxy for default framebuffer aka. screen)
+	vbo                     uint32 // stores vertex position, color, texture, and normal array data
+	ibo                     uint32 // stores sets of indicies to draw that make up elements (e.g. triangles)
+	attribVertexPosition    uint32 // reference to position input for shader variable (main shaders)
+	attribVertexColor       uint32 // reference to color input for shader variable (main shaders)
+	attribVertexPositionFBO uint32 // reference to position input for shader variable (renderProxyToScreen shaders)
+	attribVertexTextureFBO  uint32 // reference to texture input for shader variable (renderProxyToScreen shaders)
 )
 
 func init() {
@@ -89,14 +95,13 @@ func main() {
 
 func setup() {
 
-	// cleared background color = gray
-	gl.ClearColor(0.5, 0.5, 0.5, 1)
-
-	// clear screen
+	// one-time clear screen to yellow
+	gl.ClearColor(1, 1, 0, 1)
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
-	// create shader program
-	setupProgram()
+	// create shader programs
+	setupProgram_Main()
+	setupProgram_RenderProxyToScreen()
 
 	// prepare vbo/ibo buffers
 	setupBuffers()
@@ -173,11 +178,8 @@ func load() {
 
 func draw() {
 
-	// clear screen
-	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-
-	// bind program
-	gl.UseProgram(program)
+	// bind offscreen framebuffer
+	bindProxyScreen()
 
 	// gl.Begin()
 	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)              // bind vertex buffer
@@ -200,17 +202,82 @@ func draw() {
 	gl.DisableVertexAttribArray(attribVertexPosition) // disable vertex position
 	gl.DisableVertexAttribArray(attribVertexColor)    // disable vertex color
 
+	// unbind proxy screen
+	unbindProxyScreen()
+
+	// using the proxy screen's rendered image, overlay on real screen using a single quad
+	renderProxyToScreen()
+
 	// check for accumulated OpenGL errors
 	checkGLError()
 
 }
 
+// use proxy offscreen rendering using framebuffers
+func bindProxyScreen() {
+
+	// bind MAIN program (NOTE: Yes, we are binding the MAIN program)
+	gl.UseProgram(program)
+
+	// bind proxy framebuffer instead of default framebuffer
+	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, fbo)
+
+	// clear proxy screen to gray
+	gl.ClearColor(0.5, 0.5, 0.5, 1)
+	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+
+	// ensure depth test is enabled during proxy screen use
+	gl.Enable(gl.DEPTH_TEST)
+
+}
+
+// use default (real) screen for rendering by unbinding proxy screen
+func unbindProxyScreen() {
+
+	// bind PROXY program (NOTE: Yes, we are binding the PROXY program)
+	gl.UseProgram(programFramebuffer)
+
+	// unbind proxy framebuffer and set back to default framebuffer
+	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
+
+	// clear screen to black
+	gl.ClearColor(0, 0, 0, 1)
+	gl.Clear(gl.COLOR_BUFFER_BIT) // no need to clear depth as we will disabled it
+
+	// disable depth test
+	gl.Disable(gl.DEPTH_TEST)
+
+}
+
+func renderProxyToScreen() {
+
+	// bind program
+	gl.UseProgram(programFramebuffer)
+
+}
+
 // https://en.wikipedia.org/wiki/Vertex_buffer_object
 // https://www.songho.ca/opengl/gl_vbo.html#create
+// https://learnopengl.com/Advanced-OpenGL/Framebuffers
 func setupBuffers() {
 
 	// to be more efficient, vertices position are in float32 and color is in uint32
 	bytesTotalSize := (len(quadVertices) * bytesFloat32) + (len(quadColors) * bytesUint32)
+
+	// create FBO and bind to it
+	gl.GenFramebuffersEXT(1, &fbo) // offscreen rendering use framebuffer extension
+	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, fbo)
+
+	// attach texture to FBO (color buffer component)
+	attachTexture()
+
+	/// attach renderbuffer to FBO (combined depth and stencil buffer component)
+	attachRenderbuffer()
+
+	// check if FBO is ready and valid
+	if gl.CheckFramebufferStatusEXT(gl.FRAMEBUFFER_EXT) != gl.FRAMEBUFFER_COMPLETE_EXT {
+		panic("Framebuffer (FBO) FATAL ERROR")
+	}
 
 	// create VBOs
 	gl.GenBuffers(1, &vbo) // for vertex buffer
@@ -228,9 +295,48 @@ func setupBuffers() {
 	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(quadIndices)*bytesUint16, gl.Ptr(quadIndices), gl.STATIC_DRAW)
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
+	// unbind FBO
+	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
+
 }
 
-func setupProgram() {
+func attachTexture() {
+
+	// create texture for framebuffer attachment, and bind to it
+	gl.GenTextures(1, &fboTexture)
+	gl.BindTexture(gl.TEXTURE_2D, fboTexture)
+
+	// initalize texture (memory space and min/mag filters)
+	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGB, windowWidth, windowHeight, 0, gl.RGB, gl.UNSIGNED_BYTE, nil)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+
+	// unbind texture
+	gl.BindTexture(gl.TEXTURE_2D, 0)
+
+	// attach texture to framebuffer
+	gl.FramebufferTexture2DEXT(gl.FRAMEBUFFER_EXT, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTexture, 0)
+
+}
+
+func attachRenderbuffer() {
+
+	// create renderbuffer for depth and stencil testing. and bind to it
+	gl.GenRenderbuffersEXT(1, &fboRenderbuffer)
+	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, fboRenderbuffer)
+
+	// initalize renderbuffer memory space
+	gl.RenderbufferStorageEXT(gl.RENDERBUFFER_EXT, gl.DEPTH24_STENCIL8, windowWidth, windowHeight)
+
+	// unbind renderbuffer
+	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, 0)
+
+	// attach renderbuffer to framebuffer
+	gl.FramebufferRenderbufferEXT(gl.FRAMEBUFFER_EXT, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER_EXT, fboRenderbuffer)
+
+}
+
+func setupProgram_Main() {
 
 	var err error
 
@@ -244,6 +350,29 @@ func setupProgram() {
 	// get attribute index for later use
 	attribVertexPosition = uint32(gl.GetAttribLocation(program, gl.Str("vertexPosition\x00")))
 	attribVertexColor = uint32(gl.GetAttribLocation(program, gl.Str("vertexColor\x00")))
+
+	// unbind program
+	gl.UseProgram(0)
+
+}
+
+func setupProgram_RenderProxyToScreen() {
+
+	var err error
+
+	// configure program, load shaders, and link attributes
+	program, err = newProgram(vertexShaderFramebuffer, fragmentShaderFramebuffer)
+	if err != nil {
+		panic(err)
+	}
+	gl.UseProgram(program)
+
+	// get attribute index for later use
+	attribVertexPositionFBO = uint32(gl.GetAttribLocation(program, gl.Str("vertexPositionFBO\x00")))
+	attribVertexTextureFBO = uint32(gl.GetAttribLocation(program, gl.Str("vertexTextureFBO\x00")))
+
+	// unbind program
+	gl.UseProgram(0)
 
 }
 
@@ -344,6 +473,36 @@ varying vec4 fragmentColor;
 
 void main() {
 	gl_FragColor = fragmentColor;
+}
+` + "\x00"
+
+var vertexShaderFramebuffer = `
+#version 120
+
+// input
+attribute vec2 vertexPositionFBO;
+attribute vec2 vertexTextureFBO;
+
+// output
+varying vec2 fragmentTextureFBO;
+
+void main() {
+	fragmentTextureFBO = vertexTextureFBO;
+	gl_Position = vec4(vertexPositionFBO, 0, 1);
+}
+` + "\x00"
+
+var fragmentShaderFramebuffer = `
+#version 120
+
+// input
+uniform sampler2D screenTexture;
+
+// input
+varying vec2 fragmentTextureFBO;
+
+void main() {
+	gl_FragColor = texture(screenTexture, fragmentTextureFBO);
 }
 ` + "\x00"
 
