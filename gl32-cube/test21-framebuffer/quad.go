@@ -38,7 +38,7 @@ var (
 )
 
 var (
-	programMain             uint32 // connects vertex and fragment shaders (main shaders)
+	programScreen           uint32 // connects vertex and fragment shaders (Screen shaders)
 	programFramebuffer      uint32 // connects vertex and fragment shaders (Framebuffer shaders)
 	fbo                     uint32 // off-screen rendering using framebuffer
 	fboTexture              uint32 // texture attachment for framebuffer color component (to act as proxy for default framebuffer aka. screen)
@@ -48,8 +48,8 @@ var (
 	attribVertexPosition    uint32 // reference to position input for shader variable (Framebuffer shaders)
 	attribVertexTexCoord    uint32 // reference to texture coordinate input for shader variable (Framebuffer shaders)
 	attribVertexColor       uint32 // reference to color input for shader variable (Framebuffer shaders)
-	attribVertexPositionFBO uint32 // reference to position input for shader variable (main shaders)
-	attribVertexTextureFBO  uint32 // reference to texture (replacement for Color) input for shader variable (main shaders)
+	attribVertexPositionFBO uint32 // reference to position input for shader variable (Screen shaders)
+	attribVertexTextureFBO  uint32 // reference to texture (replacement for Color) input for shader variable (Screen shaders)
 )
 
 func init() {
@@ -126,7 +126,7 @@ func setup() {
 	gl.Enable(gl.TEXTURE_2D)
 
 	// create shader programs
-	setupProgram_Main()
+	setupProgram_Screen()
 	setupProgram_Framebuffer()
 
 	// prepare vbo/ibo buffers
@@ -283,8 +283,8 @@ func bindProxyScreen() {
 // use default (real) screen for rendering by unbinding proxy screen
 func unbindProxyScreen() {
 
-	// bind Main program
-	gl.UseProgram(programMain)
+	// bind Screen program
+	gl.UseProgram(programScreen)
 
 	// unbind proxy framebuffer and set back to default framebuffer
 	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
@@ -396,20 +396,20 @@ func attachRenderbuffer() {
 
 }
 
-func setupProgram_Main() {
+func setupProgram_Screen() {
 
 	var err error
 
 	// configure program, load shaders, and link attributes
-	programMain, err = newProgram(vertexShaderMain, fragmentShaderMain)
+	programScreen, err = newProgram(vertexShaderScreen, fragmentShaderScreen)
 	if err != nil {
 		panic(err)
 	}
-	gl.UseProgram(programMain)
+	gl.UseProgram(programScreen)
 
 	// get attribute index for later use
-	attribVertexPositionFBO = uint32(gl.GetAttribLocation(programMain, gl.Str("vertexPositionFBO\x00")))
-	attribVertexTextureFBO = uint32(gl.GetAttribLocation(programMain, gl.Str("vertexTextureFBO\x00")))
+	attribVertexPositionFBO = uint32(gl.GetAttribLocation(programScreen, gl.Str("vertexPositionFBO\x00")))
+	attribVertexTextureFBO = uint32(gl.GetAttribLocation(programScreen, gl.Str("vertexTextureFBO\x00")))
 
 	// unbind program
 	gl.UseProgram(0)
@@ -543,7 +543,7 @@ void main() {
 }
 ` + "\x00"
 
-var vertexShaderMain = `
+var vertexShaderScreen = `
 #version 120
 
 // input
@@ -559,7 +559,7 @@ void main() {
 }
 ` + "\x00"
 
-var fragmentShaderMain = `
+var fragmentShaderScreen = `
 #version 120
 
 // input
