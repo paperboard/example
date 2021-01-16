@@ -18,24 +18,38 @@ const (
 	bytesFloat32       = 4 // a float32 is 4 bytes
 	bytesUint32        = 4 // a uint32 is 4 bytes
 	bytesUint16        = 2 // a uint16 is 2 bytes
-	vertexPositionSize = 3 // x,y,z
-	vertexColorSize    = 4 // r,g,b,a
+	bytesUint8         = 1 // a uint8 has 1 byte
+	vertexPositionSize = 3 // x,y,z = points in 3D space
+	vertexTexCoordSize = 2 // x,y = texture coordinates
+	vertexColorSize    = 4 // r,g,b,a = color w/ transparency
 	verticesPerQuad    = 4 // a rectangle has 4 vertices
 	indicesPerQuad     = 6 // a rectangle has 6 indices
 )
 
 var (
-	program                 uint32 // connects vertex and fragment shaders (main shaders)
-	programFramebuffer      uint32 // connects vertex and fragment shaders (renderProxyToScreen shaders)
+	quadVertices    = make([]float32, 0, 100)
+	quadTexCoords   = make([]uint8, 0, 100)
+	quadColors      = make([]uint32, 0, 100)
+	quadIndices     = make([]uint16, 0, 100)
+	offsetVertices  = 0
+	offsetTexCoords = 0
+	offsetColors    = 0
+	vboBytesTotal   = 0 // total bytes needed for VBO buffer (quadVertices + quadTexCoords + quadColors)
+)
+
+var (
+	programMain             uint32 // connects vertex and fragment shaders (main shaders)
+	programFramebuffer      uint32 // connects vertex and fragment shaders (Framebuffer shaders)
 	fbo                     uint32 // off-screen rendering using framebuffer
 	fboTexture              uint32 // texture attachment for framebuffer color component (to act as proxy for default framebuffer aka. screen)
 	fboRenderbuffer         uint32 // renderbuffer attachment for framebuffer depth & stencil components (to act as proxy for default framebuffer aka. screen)
 	vbo                     uint32 // stores vertex position, color, texture, and normal array data
 	ibo                     uint32 // stores sets of indicies to draw that make up elements (e.g. triangles)
-	attribVertexPosition    uint32 // reference to position input for shader variable (main shaders)
-	attribVertexColor       uint32 // reference to color input for shader variable (main shaders)
-	attribVertexPositionFBO uint32 // reference to position input for shader variable (renderProxyToScreen shaders)
-	attribVertexTextureFBO  uint32 // reference to texture input for shader variable (renderProxyToScreen shaders)
+	attribVertexPosition    uint32 // reference to position input for shader variable (Framebuffer shaders)
+	attribVertexTexCoord    uint32 // reference to texture coordinate input for shader variable (Framebuffer shaders)
+	attribVertexColor       uint32 // reference to color input for shader variable (Framebuffer shaders)
+	attribVertexPositionFBO uint32 // reference to position input for shader variable (main shaders)
+	attribVertexTextureFBO  uint32 // reference to texture (replacement for Color) input for shader variable (main shaders)
 )
 
 func init() {
@@ -99,9 +113,21 @@ func setup() {
 	gl.ClearColor(1, 1, 0, 1)
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
+	// do not render parts of shapes (pixels) that will
+	// anyhow be covered up by higher z-axis shapes (pixels)
+	// so that we are drawing pixels more efficiently
+	gl.Enable(gl.DEPTH_TEST)
+
+	// if multiple shapes have same z-value, take their
+	// draw order in account and show if possible
+	gl.DepthFunc(gl.LEQUAL)
+
+	// enable textures
+	gl.Enable(gl.TEXTURE_2D)
+
 	// create shader programs
 	setupProgram_Main()
-	setupProgram_RenderProxyToScreen()
+	setupProgram_Framebuffer()
 
 	// prepare vbo/ibo buffers
 	setupBuffers()
@@ -121,16 +147,6 @@ func setup() {
 //  |/      |/
 //  v2------v3
 //
-var quadVertices = make([]float32, 0, 100) // size 100 doesn't matter
-var quadColors = make([]uint32, 0, 100)
-var quadIndices = make([]uint16, 0, 100)
-
-func makeRectangle(w float32, h float32, z float32, c color.Color) {
-	quadVertices = append(quadVertices, makeQuadVertices(w, h, z)...)
-	quadColors = append(quadColors, makeQuadColors(c.RGBA())...)
-	quadIndices = append(quadIndices, makeQuadIndices()...)
-}
-
 func makeQuadVertices(w, h, z float32) []float32 {
 	return []float32{
 		(w * 0.5), (h * 0.5), z, // v0 position = top-right
@@ -140,12 +156,33 @@ func makeQuadVertices(w, h, z float32) []float32 {
 	}
 }
 
+// texture 2D unit quad
+//
+// (0,1)    (1,1)
+//  v1------v0
+//  |       |
+//  |       |
+//  |       |
+//  v2------v3
+// (0,0)    (1,0)
+//
+// https://web.cse.ohio-state.edu/~shen.94/581/Site/Slides_files/texture.pdf
+func makeQuadTextureCoord() []uint8 {
+	return []uint8{
+		1, 1, // v0 = texel @ top-right in texture coordinate system
+		0, 1, // v1 = texel @ top-left in texture coordinate system
+		0, 0, // v2 = texel @ bottom-left in texture coordinate system
+		1, 0, // v3 = texel @ bottom-right in texture coordinate system
+	}
+}
+
 func makeQuadColors(r, g, b, a uint32) []uint32 {
+	// all 4 vertex (v0, v1, v2, v3) should have same color
 	return []uint32{
-		r, g, b, a,
-		r, g, b, a,
-		r, g, b, a,
-		r, g, b, a,
+		r, g, b, a, // v0
+		r, g, b, a, // v1
+		r, g, b, a, // v2
+		r, g, b, a, // v3
 	}
 }
 
@@ -160,16 +197,23 @@ func makeQuadIndices() []uint16 {
 
 func quadDebugPrint() {
 	fmt.Printf("RECT_COUNT -- Rectangles: %v\n", len(quadIndices)/indicesPerQuad)
-	fmt.Printf("RAW_LENGTH -- Rectangle has %v vertex\nVertices   %v (%v-per-vertex)\nColors     %v (%v-per-vertex)\nIndices    %v (%v-per-rectangle)\n", verticesPerQuad, len(quadVertices), vertexPositionSize, len(quadColors), vertexColorSize, len(quadIndices), indicesPerQuad)
+	fmt.Printf("RAW_LENGTH -- Rectangle has %v vertex\nVertices   %v (%v-per-vertex)\nTexCoord   %v (%v-per-vertex)\nColors     %v (%v-per-vertex)\nIndices    %v (%v-per-rectangle)\n", verticesPerQuad, len(quadVertices), vertexPositionSize, len(quadTexCoords), vertexTexCoordSize, len(quadColors), vertexColorSize, len(quadIndices), indicesPerQuad)
+}
+
+func drawRectangle(w float32, h float32, z float32, c color.Color) {
+	quadVertices = append(quadVertices, makeQuadVertices(w, h, z)...)
+	quadTexCoords = append(quadTexCoords, makeQuadTextureCoord()...)
+	quadColors = append(quadColors, makeQuadColors(c.RGBA())...)
+	quadIndices = append(quadIndices, makeQuadIndices()...)
 }
 
 func load() {
 
-	// make red rectangle
-	makeRectangle(2, 2, -1.2, color.NRGBA{1, 0, 0, 1})
+	// draw red rectangle
+	drawRectangle(2, 2, -1.2, color.NRGBA{1, 0, 0, 1})
 
-	// make blue rectangle
-	makeRectangle(1, 1, -1.1, color.NRGBA{0, 0, 1, 1})
+	// draw blue rectangle
+	drawRectangle(1, 1, -1.1, color.NRGBA{0, 0, 1, 1})
 
 	// print debug info for shapes
 	quadDebugPrint()
@@ -185,13 +229,17 @@ func draw() {
 	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)              // bind vertex buffer
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo)      // bind indices buffer
 	gl.EnableVertexAttribArray(attribVertexPosition) // enable vertex position
+	gl.EnableVertexAttribArray(attribVertexTexCoord) // enable vertex texture coordinate
 	gl.EnableVertexAttribArray(attribVertexColor)    // enable vertex color
 
 	// configure and enable vertex position
-	gl.VertexAttribPointer(attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(0*bytesFloat32)) // PtrOffset = vertices position start at start of array (offset = 0)
+	gl.VertexAttribPointer(attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(offsetVertices))
+
+	// configure and enable vertex texture coordinate
+	gl.VertexAttribPointer(attribVertexTexCoord, vertexTexCoordSize, gl.UNSIGNED_BYTE, false, 0, gl.PtrOffset(offsetTexCoords))
 
 	// configure and enable vertex color
-	gl.VertexAttribPointer(attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(len(quadVertices)*bytesFloat32)) // PtrOffset = colors start after vertices position
+	gl.VertexAttribPointer(attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(offsetColors))
 
 	// draw rectangles
 	gl.DrawElements(gl.TRIANGLES, int32(len(quadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(0*bytesUint16))
@@ -200,6 +248,7 @@ func draw() {
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                 // unbind vertex buffer
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)         // unbind indices buffer
 	gl.DisableVertexAttribArray(attribVertexPosition) // disable vertex position
+	gl.DisableVertexAttribArray(attribVertexTexCoord) // disable vertex texture coordinate
 	gl.DisableVertexAttribArray(attribVertexColor)    // disable vertex color
 
 	// unbind proxy screen
@@ -216,8 +265,8 @@ func draw() {
 // use proxy offscreen rendering using framebuffers
 func bindProxyScreen() {
 
-	// bind MAIN program (NOTE: Yes, we are binding the MAIN program)
-	gl.UseProgram(program)
+	// bind Framebuffer program
+	gl.UseProgram(programFramebuffer)
 
 	// bind proxy framebuffer instead of default framebuffer
 	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, fbo)
@@ -226,7 +275,7 @@ func bindProxyScreen() {
 	gl.ClearColor(0.5, 0.5, 0.5, 1)
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
-	// ensure depth test is enabled during proxy screen use
+	// ensure depth test is enabled during proxy screen usage
 	gl.Enable(gl.DEPTH_TEST)
 
 }
@@ -234,15 +283,15 @@ func bindProxyScreen() {
 // use default (real) screen for rendering by unbinding proxy screen
 func unbindProxyScreen() {
 
-	// bind PROXY program (NOTE: Yes, we are binding the PROXY program)
-	gl.UseProgram(programFramebuffer)
+	// bind Main program
+	gl.UseProgram(programMain)
 
 	// unbind proxy framebuffer and set back to default framebuffer
 	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
 
 	// clear screen to black
 	gl.ClearColor(0, 0, 0, 1)
-	gl.Clear(gl.COLOR_BUFFER_BIT) // no need to clear depth as we will disabled it
+	gl.Clear(gl.COLOR_BUFFER_BIT) // no need to clear depth, we will disable depth
 
 	// disable depth test
 	gl.Disable(gl.DEPTH_TEST)
@@ -251,9 +300,6 @@ func unbindProxyScreen() {
 
 func renderProxyToScreen() {
 
-	// bind program
-	gl.UseProgram(programFramebuffer)
-
 }
 
 // https://en.wikipedia.org/wiki/Vertex_buffer_object
@@ -261,8 +307,16 @@ func renderProxyToScreen() {
 // https://learnopengl.com/Advanced-OpenGL/Framebuffers
 func setupBuffers() {
 
-	// to be more efficient, vertices position are in float32 and color is in uint32
-	bytesTotalSize := (len(quadVertices) * bytesFloat32) + (len(quadColors) * bytesUint32)
+	// use PROXY program
+	gl.UseProgram(programFramebuffer)
+
+	// to be more efficient, vertices position are in float32, texture coordinate in uint8, and color is in uint32
+	vboBytesTotal = (len(quadVertices) * bytesFloat32) + (len(quadTexCoords) * bytesUint8) + (len(quadColors) * bytesUint32)
+
+	// data offsets
+	offsetVertices = 0 * bytesFloat32
+	offsetTexCoords = offsetVertices + len(quadVertices)*bytesFloat32
+	offsetColors = offsetTexCoords + len(quadTexCoords)*bytesUint8
 
 	// create FBO and bind to it
 	gl.GenFramebuffersEXT(1, &fbo) // offscreen rendering use framebuffer extension
@@ -280,14 +334,15 @@ func setupBuffers() {
 	}
 
 	// create VBOs
-	gl.GenBuffers(1, &vbo) // for vertex buffer
-	gl.GenBuffers(1, &ibo) // for index buffer
+	gl.GenBuffers(1, &vbo) // buffer for vertex position, texture coordinate, and color
+	gl.GenBuffers(1, &ibo) // buffer for vertex indices
 
 	// copy vertex data to VBO
 	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-	gl.BufferData(gl.ARRAY_BUFFER, bytesTotalSize, nil, gl.STATIC_DRAW)                                                // initalize but do not copy any data
-	gl.BufferSubData(gl.ARRAY_BUFFER, 0*bytesFloat32, len(quadVertices)*bytesFloat32, gl.Ptr(quadVertices))            // copy vertices starting from 0 offest
-	gl.BufferSubData(gl.ARRAY_BUFFER, len(quadVertices)*bytesFloat32, len(quadColors)*bytesUint32, gl.Ptr(quadColors)) // copy colors after vertices
+	gl.BufferData(gl.ARRAY_BUFFER, vboBytesTotal, nil, gl.STATIC_DRAW)                                       // initalize but do not copy any data
+	gl.BufferSubData(gl.ARRAY_BUFFER, offsetVertices, len(quadVertices)*bytesFloat32, gl.Ptr(quadVertices))  // copy vertices starting from 0 offest
+	gl.BufferSubData(gl.ARRAY_BUFFER, offsetTexCoords, len(quadTexCoords)*bytesUint8, gl.Ptr(quadTexCoords)) // copy textures after vertices
+	gl.BufferSubData(gl.ARRAY_BUFFER, offsetColors, len(quadColors)*bytesUint32, gl.Ptr(quadColors))         // copy colors after textures
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)
 
 	// copy index data to VBO
@@ -298,8 +353,12 @@ func setupBuffers() {
 	// unbind FBO
 	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
 
+	// unbind PROXY program
+	gl.UseProgram(0)
+
 }
 
+// should only be called by setupBuffers()
 func attachTexture() {
 
 	// create texture for framebuffer attachment, and bind to it
@@ -308,8 +367,8 @@ func attachTexture() {
 
 	// initalize texture (memory space and min/mag filters)
 	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGB, windowWidth, windowHeight, 0, gl.RGB, gl.UNSIGNED_BYTE, nil)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
 	// unbind texture
 	gl.BindTexture(gl.TEXTURE_2D, 0)
@@ -319,6 +378,7 @@ func attachTexture() {
 
 }
 
+// should only be called by setupBuffers()
 func attachRenderbuffer() {
 
 	// create renderbuffer for depth and stencil testing. and bind to it
@@ -341,35 +401,38 @@ func setupProgram_Main() {
 	var err error
 
 	// configure program, load shaders, and link attributes
-	program, err = newProgram(vertexShader, fragmentShader)
+	programMain, err = newProgram(vertexShaderMain, fragmentShaderMain)
 	if err != nil {
 		panic(err)
 	}
-	gl.UseProgram(program)
+	gl.UseProgram(programMain)
 
 	// get attribute index for later use
-	attribVertexPosition = uint32(gl.GetAttribLocation(program, gl.Str("vertexPosition\x00")))
-	attribVertexColor = uint32(gl.GetAttribLocation(program, gl.Str("vertexColor\x00")))
+	attribVertexPositionFBO = uint32(gl.GetAttribLocation(programMain, gl.Str("vertexPositionFBO\x00")))
+	attribVertexTextureFBO = uint32(gl.GetAttribLocation(programMain, gl.Str("vertexTextureFBO\x00")))
 
 	// unbind program
 	gl.UseProgram(0)
 
 }
 
-func setupProgram_RenderProxyToScreen() {
+func setupProgram_Framebuffer() {
 
 	var err error
 
 	// configure program, load shaders, and link attributes
-	program, err = newProgram(vertexShaderFramebuffer, fragmentShaderFramebuffer)
+	programFramebuffer, err = newProgram(vertexShaderFramebuffer, fragmentShaderFramebuffer)
 	if err != nil {
 		panic(err)
 	}
-	gl.UseProgram(program)
+	gl.UseProgram(programFramebuffer)
 
 	// get attribute index for later use
-	attribVertexPositionFBO = uint32(gl.GetAttribLocation(program, gl.Str("vertexPositionFBO\x00")))
-	attribVertexTextureFBO = uint32(gl.GetAttribLocation(program, gl.Str("vertexTextureFBO\x00")))
+	attribVertexPosition = uint32(gl.GetAttribLocation(programFramebuffer, gl.Str("vertexPosition\x00")))
+	attribVertexTexCoord = uint32(gl.GetAttribLocation(programFramebuffer, gl.Str("vertexTexCoord\x00")))
+	attribVertexColor = uint32(gl.GetAttribLocation(programFramebuffer, gl.Str("vertexColor\x00")))
+
+	fmt.Printf("attribVertexPosition: %v attribVertexTexCoord: %v attribVertexColor: %v\n", attribVertexPosition, attribVertexTexCoord, attribVertexColor)
 
 	// unbind program
 	gl.UseProgram(0)
@@ -415,36 +478,33 @@ func setupProgram_RenderProxyToScreen() {
 // https://www.codeguru.com/cpp/misc/misc/graphics/article.php/c10123/Deriving-Projection-Matrices.htm#page-2
 func setupCamera(fov float32, cameraposition mgl32.Vec3, target mgl32.Vec3) {
 
-	// do not render parts of shapes (pixels) that will
-	// anyhow be covered up by higher z-axis shapes (pixels)
-	// so that we are drawing pixels more efficiently
-	gl.Enable(gl.DEPTH_TEST)
-
-	// if multiple shapes have same z-value, take their
-	// draw order in account and show if possible
-	gl.DepthFunc(gl.LEQUAL)
+	// use PROXY program
+	gl.UseProgram(programFramebuffer)
 
 	// CREATE (PRESPECTIVE) PROJECTION MATRIX
 	// a matrix to transform from eye to NDC coordinates
 	projection := mgl32.Perspective(mgl32.DegToRad(fov), float32(windowWidth)/windowHeight, 0.1, 10.0)
-	projectionUniform := gl.GetUniformLocation(program, gl.Str("projection\x00"))
+	projectionUniform := gl.GetUniformLocation(programFramebuffer, gl.Str("projection\x00"))
 	gl.UniformMatrix4fv(projectionUniform, 1, false, &projection[0])
 
 	// CREATE (CAMERA) VIEW MATRIX
 	// a matrix to transform from eye to NDC coordinates
 	camera := mgl32.LookAtV(cameraposition, target, mgl32.Vec3{0, 1, 0})
-	cameraUniform := gl.GetUniformLocation(program, gl.Str("camera\x00"))
+	cameraUniform := gl.GetUniformLocation(programFramebuffer, gl.Str("camera\x00"))
 	gl.UniformMatrix4fv(cameraUniform, 1, false, &camera[0])
 
 	// CREATE (OBJECT) MODEL MATRIX
 	// a matrix to transform from object to eye coordinates
 	model := mgl32.Ident4()
-	modelUniform := gl.GetUniformLocation(program, gl.Str("model\x00"))
+	modelUniform := gl.GetUniformLocation(programFramebuffer, gl.Str("model\x00"))
 	gl.UniformMatrix4fv(modelUniform, 1, false, &model[0])
+
+	// unbind PROXY program
+	gl.UseProgram(0)
 
 }
 
-var vertexShader = `
+var vertexShaderFramebuffer = `
 #version 120
 
 // input
@@ -454,29 +514,36 @@ uniform mat4 model;
 
 // input
 attribute vec3 vertexPosition;
+attribute vec2 vertexTexCoord;
 attribute vec4 vertexColor;
 
 // output
+varying vec2 fragmentTexCoord;
 varying vec4 fragmentColor;
 
 void main() {
+	fragmentTexCoord = vertexTexCoord;
 	fragmentColor = vertexColor;
 	gl_Position = projection * camera * model * vec4(vertexPosition, 1);
 }
 ` + "\x00"
 
-var fragmentShader = `
+var fragmentShaderFramebuffer = `
 #version 120
 
 // input
+varying vec2 fragmentTexCoord;
 varying vec4 fragmentColor;
 
 void main() {
+	//vec3 fragColor = fragmentColor;
+	//fragColor *= texture2D(map0, fragmentTexCoord).rgb; 
+	//gl_FragColor = vec4(fragColor, fragmentColor.a);
 	gl_FragColor = fragmentColor;
 }
 ` + "\x00"
 
-var vertexShaderFramebuffer = `
+var vertexShaderMain = `
 #version 120
 
 // input
@@ -492,7 +559,7 @@ void main() {
 }
 ` + "\x00"
 
-var fragmentShaderFramebuffer = `
+var fragmentShaderMain = `
 #version 120
 
 // input
@@ -502,7 +569,7 @@ uniform sampler2D screenTexture;
 varying vec2 fragmentTextureFBO;
 
 void main() {
-	gl_FragColor = texture(screenTexture, fragmentTextureFBO);
+	gl_FragColor = texture2D(screenTexture, fragmentTextureFBO);
 }
 ` + "\x00"
 
