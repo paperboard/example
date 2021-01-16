@@ -26,8 +26,8 @@ const (
 	indicesPerQuad     = 6 // a rectangle has 6 indices
 )
 
-// FrameQuads hold draw elements used by both "proxy screen" (ContextFramebuffer) and "screen" (ContextScreen)
-type FrameQuads struct {
+// ElementQuads hold draw elements used by both "proxy screen" (ContextFramebuffer) and "screen" (ContextScreen)
+type ElementQuads struct {
 	QuadVertices    []float32
 	QuadTexCoords   []uint8
 	QuadColors      []uint32
@@ -40,7 +40,7 @@ type FrameQuads struct {
 
 // ContextFramebuffer is a proxy screen
 type ContextFramebuffer struct {
-	quads                *FrameQuads
+	quads                *ElementQuads
 	program              uint32 // connects vertex and fragment shaders (Framebuffer shaders)
 	fbo                  uint32 // off-screen rendering using framebuffer
 	fboTexture           uint32 // texture attachment for framebuffer color component (to act as proxy for default framebuffer aka. screen)
@@ -54,7 +54,7 @@ type ContextFramebuffer struct {
 
 // ContextScreen is a real screen
 type ContextScreen struct {
-	quads                   *FrameQuads
+	quads                   *ElementQuads
 	program                 uint32 // connects vertex and fragment shaders (Screen shaders)
 	vbo                     uint32 // stores vertex position, color, texture, and normal array data
 	ibo                     uint32 // stores sets of indicies to draw that make up elements (e.g. triangles)
@@ -209,12 +209,12 @@ func makeQuadIndices(quadVerticesLen int) []uint16 {
 	}
 }
 
-func (q *FrameQuads) DebugPrint() {
+func (q *ElementQuads) DebugPrint() {
 	fmt.Printf("RECT_COUNT -- Rectangles: %v\n", len(q.QuadIndices)/indicesPerQuad)
 	fmt.Printf("RAW_LENGTH -- Rectangle has %v vertex\nVertices   %v (%v-per-vertex)\nTexCoord   %v (%v-per-vertex)\nColors     %v (%v-per-vertex)\nIndices    %v (%v-per-rectangle)\n", verticesPerQuad, len(q.QuadVertices), vertexPositionSize, len(q.QuadTexCoords), vertexTexCoordSize, len(q.QuadColors), vertexColorSize, len(q.QuadIndices), indicesPerQuad)
 }
 
-func (q *FrameQuads) DrawRectangle(w float32, h float32, z float32, clr color.Color) {
+func (q *ElementQuads) DrawRectangle(w float32, h float32, z float32, clr color.Color) {
 	q.QuadVertices = append(q.QuadVertices, makeQuadVertices(w, h, z)...)
 	q.QuadTexCoords = append(q.QuadTexCoords, makeQuadTextureCoord()...)
 	q.QuadColors = append(q.QuadColors, makeQuadColors(clr.RGBA())...)
@@ -229,7 +229,7 @@ func load() {
 func (ctx *ContextScreen) load() {
 
 	// initalize screen quads
-	ctx.quads = &FrameQuads{
+	ctx.quads = &ElementQuads{
 		QuadVertices:    []float32{},
 		QuadTexCoords:   []uint8{},
 		QuadColors:      []uint32{},
@@ -248,7 +248,7 @@ func (ctx *ContextScreen) load() {
 func (ctx *ContextFramebuffer) load() {
 
 	// initalize framebuffer quads
-	ctx.quads = &FrameQuads{
+	ctx.quads = &ElementQuads{
 		QuadVertices:    []float32{},
 		QuadTexCoords:   []uint8{},
 		QuadColors:      []uint32{},
