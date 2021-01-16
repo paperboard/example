@@ -26,18 +26,20 @@ const (
 	indicesPerQuad     = 6 // a rectangle has 6 indices
 )
 
-var (
-	quadVertices    = make([]float32, 0, 100)
-	quadTexCoords   = make([]uint8, 0, 100)
-	quadColors      = make([]uint32, 0, 100)
-	quadIndices     = make([]uint16, 0, 100)
-	offsetVertices  = 0
-	offsetTexCoords = 0
-	offsetColors    = 0
-	vboBytesTotal   = 0 // total bytes needed for VBO buffer (quadVertices + quadTexCoords + quadColors)
-)
+type FrameQuads struct {
+	QuadVertices    []float32
+	QuadTexCoords   []uint8
+	QuadColors      []uint32
+	QuadIndices     []uint16
+	OffsetVertices  int
+	OffsetTexCoords int
+	OffsetColors    int
+	BytesTotal      int // total bytes needed for VBO buffer (QuadVertices + QuadTexCoords + QuadColors)
+}
 
 var (
+	quadsScreen             *FrameQuads
+	quadsFramebuffer        *FrameQuads
 	programScreen           uint32 // connects vertex and fragment shaders (Screen shaders)
 	programFramebuffer      uint32 // connects vertex and fragment shaders (Framebuffer shaders)
 	fbo                     uint32 // off-screen rendering using framebuffer
@@ -130,7 +132,7 @@ func setup() {
 	setupProgram_Framebuffer()
 
 	// prepare vbo/ibo buffers
-	setupBuffers()
+	quadsFramebuffer.setupBuffers()
 
 	// caculate camera matrices
 	setupCamera(90, mgl32.Vec3{2, 2, 2}, mgl32.Vec3{0, 0, -1})
@@ -186,8 +188,8 @@ func makeQuadColors(r, g, b, a uint32) []uint32 {
 	}
 }
 
-func makeQuadIndices() []uint16 {
-	rectangleCount := len(quadVertices) / (verticesPerQuad * vertexPositionSize)
+func makeQuadIndices(quadVerticesLen int) []uint16 {
+	rectangleCount := quadVerticesLen / (verticesPerQuad * vertexPositionSize)
 	i := uint16((rectangleCount - 1)) * verticesPerQuad
 	return []uint16{
 		i, i + 1, i + 2, // first triangle
@@ -195,28 +197,41 @@ func makeQuadIndices() []uint16 {
 	}
 }
 
-func quadDebugPrint() {
-	fmt.Printf("RECT_COUNT -- Rectangles: %v\n", len(quadIndices)/indicesPerQuad)
-	fmt.Printf("RAW_LENGTH -- Rectangle has %v vertex\nVertices   %v (%v-per-vertex)\nTexCoord   %v (%v-per-vertex)\nColors     %v (%v-per-vertex)\nIndices    %v (%v-per-rectangle)\n", verticesPerQuad, len(quadVertices), vertexPositionSize, len(quadTexCoords), vertexTexCoordSize, len(quadColors), vertexColorSize, len(quadIndices), indicesPerQuad)
+func (q *FrameQuads) DebugPrint() {
+	fmt.Printf("RECT_COUNT -- Rectangles: %v\n", len(q.QuadIndices)/indicesPerQuad)
+	fmt.Printf("RAW_LENGTH -- Rectangle has %v vertex\nVertices   %v (%v-per-vertex)\nTexCoord   %v (%v-per-vertex)\nColors     %v (%v-per-vertex)\nIndices    %v (%v-per-rectangle)\n", verticesPerQuad, len(q.QuadVertices), vertexPositionSize, len(q.QuadTexCoords), vertexTexCoordSize, len(q.QuadColors), vertexColorSize, len(q.QuadIndices), indicesPerQuad)
 }
 
-func drawRectangle(w float32, h float32, z float32, c color.Color) {
-	quadVertices = append(quadVertices, makeQuadVertices(w, h, z)...)
-	quadTexCoords = append(quadTexCoords, makeQuadTextureCoord()...)
-	quadColors = append(quadColors, makeQuadColors(c.RGBA())...)
-	quadIndices = append(quadIndices, makeQuadIndices()...)
+func (q *FrameQuads) DrawRectangle(w float32, h float32, z float32, clr color.Color) {
+	q.QuadVertices = append(q.QuadVertices, makeQuadVertices(w, h, z)...)
+	q.QuadTexCoords = append(q.QuadTexCoords, makeQuadTextureCoord()...)
+	q.QuadColors = append(q.QuadColors, makeQuadColors(clr.RGBA())...)
+	q.QuadIndices = append(q.QuadIndices, makeQuadIndices(len(q.QuadVertices))...)
 }
 
+// NOTE: it is MANDATORY that this function intializes quadsFramebuffer
 func load() {
 
+	// initalize framebuffer quads
+	quadsFramebuffer = &FrameQuads{
+		QuadVertices:    []float32{},
+		QuadTexCoords:   []uint8{},
+		QuadColors:      []uint32{},
+		QuadIndices:     []uint16{},
+		OffsetVertices:  0,
+		OffsetTexCoords: 0,
+		OffsetColors:    0,
+		BytesTotal:      0,
+	}
+
 	// draw red rectangle
-	drawRectangle(2, 2, -1.2, color.NRGBA{1, 0, 0, 1})
+	quadsFramebuffer.DrawRectangle(2, 2, -1.2, color.NRGBA{1, 0, 0, 1})
 
 	// draw blue rectangle
-	drawRectangle(1, 1, -1.1, color.NRGBA{0, 0, 1, 1})
+	quadsFramebuffer.DrawRectangle(1, 1, -1.1, color.NRGBA{0, 0, 1, 1})
 
 	// print debug info for shapes
-	quadDebugPrint()
+	quadsFramebuffer.DebugPrint()
 
 }
 
@@ -233,16 +248,16 @@ func draw() {
 	gl.EnableVertexAttribArray(attribVertexColor)    // enable vertex color
 
 	// configure and enable vertex position
-	gl.VertexAttribPointer(attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(offsetVertices))
+	gl.VertexAttribPointer(attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(quadsFramebuffer.OffsetVertices))
 
 	// configure and enable vertex texture coordinate
-	gl.VertexAttribPointer(attribVertexTexCoord, vertexTexCoordSize, gl.UNSIGNED_BYTE, false, 0, gl.PtrOffset(offsetTexCoords))
+	gl.VertexAttribPointer(attribVertexTexCoord, vertexTexCoordSize, gl.UNSIGNED_BYTE, false, 0, gl.PtrOffset(quadsFramebuffer.OffsetTexCoords))
 
 	// configure and enable vertex color
-	gl.VertexAttribPointer(attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(offsetColors))
+	gl.VertexAttribPointer(attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(quadsFramebuffer.OffsetColors))
 
 	// draw rectangles
-	gl.DrawElements(gl.TRIANGLES, int32(len(quadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(0*bytesUint16))
+	gl.DrawElements(gl.TRIANGLES, int32(len(quadsFramebuffer.QuadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(0*bytesUint16))
 
 	// gl.End()
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                 // unbind vertex buffer
@@ -305,18 +320,18 @@ func renderProxyToScreen() {
 // https://en.wikipedia.org/wiki/Vertex_buffer_object
 // https://www.songho.ca/opengl/gl_vbo.html#create
 // https://learnopengl.com/Advanced-OpenGL/Framebuffers
-func setupBuffers() {
+func (q *FrameQuads) setupBuffers() {
 
 	// use PROXY program
 	gl.UseProgram(programFramebuffer)
 
 	// to be more efficient, vertices position are in float32, texture coordinate in uint8, and color is in uint32
-	vboBytesTotal = (len(quadVertices) * bytesFloat32) + (len(quadTexCoords) * bytesUint8) + (len(quadColors) * bytesUint32)
+	q.BytesTotal = (len(q.QuadVertices) * bytesFloat32) + (len(q.QuadTexCoords) * bytesUint8) + (len(q.QuadColors) * bytesUint32)
 
 	// data offsets
-	offsetVertices = 0 * bytesFloat32
-	offsetTexCoords = offsetVertices + len(quadVertices)*bytesFloat32
-	offsetColors = offsetTexCoords + len(quadTexCoords)*bytesUint8
+	q.OffsetVertices = 0 * bytesFloat32
+	q.OffsetTexCoords = q.OffsetVertices + len(q.QuadVertices)*bytesFloat32
+	q.OffsetColors = q.OffsetTexCoords + len(q.QuadTexCoords)*bytesUint8
 
 	// create FBO and bind to it
 	gl.GenFramebuffersEXT(1, &fbo) // offscreen rendering use framebuffer extension
@@ -339,15 +354,15 @@ func setupBuffers() {
 
 	// copy vertex data to VBO
 	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-	gl.BufferData(gl.ARRAY_BUFFER, vboBytesTotal, nil, gl.STATIC_DRAW)                                       // initalize but do not copy any data
-	gl.BufferSubData(gl.ARRAY_BUFFER, offsetVertices, len(quadVertices)*bytesFloat32, gl.Ptr(quadVertices))  // copy vertices starting from 0 offest
-	gl.BufferSubData(gl.ARRAY_BUFFER, offsetTexCoords, len(quadTexCoords)*bytesUint8, gl.Ptr(quadTexCoords)) // copy textures after vertices
-	gl.BufferSubData(gl.ARRAY_BUFFER, offsetColors, len(quadColors)*bytesUint32, gl.Ptr(quadColors))         // copy colors after textures
+	gl.BufferData(gl.ARRAY_BUFFER, q.BytesTotal, nil, gl.STATIC_DRAW)                                              // initalize but do not copy any data
+	gl.BufferSubData(gl.ARRAY_BUFFER, q.OffsetVertices, len(q.QuadVertices)*bytesFloat32, gl.Ptr(q.QuadVertices))  // copy vertices starting from 0 offest
+	gl.BufferSubData(gl.ARRAY_BUFFER, q.OffsetTexCoords, len(q.QuadTexCoords)*bytesUint8, gl.Ptr(q.QuadTexCoords)) // copy textures after vertices
+	gl.BufferSubData(gl.ARRAY_BUFFER, q.OffsetColors, len(q.QuadColors)*bytesUint32, gl.Ptr(q.QuadColors))         // copy colors after textures
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)
 
 	// copy index data to VBO
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo)
-	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(quadIndices)*bytesUint16, gl.Ptr(quadIndices), gl.STATIC_DRAW)
+	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(q.QuadIndices)*bytesUint16, gl.Ptr(q.QuadIndices), gl.STATIC_DRAW)
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
 	// unbind FBO
