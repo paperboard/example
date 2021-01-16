@@ -26,6 +26,7 @@ const (
 	indicesPerQuad     = 6 // a rectangle has 6 indices
 )
 
+// FrameQuads hold draw elements used by both "proxy screen" (ContextFramebuffer) and "screen" (ContextScreen)
 type FrameQuads struct {
 	QuadVertices    []float32
 	QuadTexCoords   []uint8
@@ -37,21 +38,33 @@ type FrameQuads struct {
 	BytesTotal      int // total bytes needed for VBO buffer (QuadVertices + QuadTexCoords + QuadColors)
 }
 
-var (
-	quadsScreen             *FrameQuads
-	quadsFramebuffer        *FrameQuads
-	programScreen           uint32 // connects vertex and fragment shaders (Screen shaders)
-	programFramebuffer      uint32 // connects vertex and fragment shaders (Framebuffer shaders)
-	fbo                     uint32 // off-screen rendering using framebuffer
-	fboTexture              uint32 // texture attachment for framebuffer color component (to act as proxy for default framebuffer aka. screen)
-	fboRenderbuffer         uint32 // renderbuffer attachment for framebuffer depth & stencil components (to act as proxy for default framebuffer aka. screen)
+// ContextFramebuffer is a proxy screen
+type ContextFramebuffer struct {
+	quads                *FrameQuads
+	program              uint32 // connects vertex and fragment shaders (Framebuffer shaders)
+	fbo                  uint32 // off-screen rendering using framebuffer
+	fboTexture           uint32 // texture attachment for framebuffer color component (to act as proxy for default framebuffer aka. screen)
+	fboRenderbuffer      uint32 // renderbuffer attachment for framebuffer depth & stencil components (to act as proxy for default framebuffer aka. screen)
+	vbo                  uint32 // stores vertex position, color, texture, and normal array data
+	ibo                  uint32 // stores sets of indicies to draw that make up elements (e.g. triangles)
+	attribVertexPosition uint32 // reference to position input for shader variable (Framebuffer shaders)
+	attribVertexTexCoord uint32 // reference to texture coordinate input for shader variable (Framebuffer shaders)
+	attribVertexColor    uint32 // reference to color input for shader variable (Framebuffer shaders)
+}
+
+// ContextScreen is a real screen
+type ContextScreen struct {
+	quads                   *FrameQuads
+	program                 uint32 // connects vertex and fragment shaders (Screen shaders)
 	vbo                     uint32 // stores vertex position, color, texture, and normal array data
 	ibo                     uint32 // stores sets of indicies to draw that make up elements (e.g. triangles)
-	attribVertexPosition    uint32 // reference to position input for shader variable (Framebuffer shaders)
-	attribVertexTexCoord    uint32 // reference to texture coordinate input for shader variable (Framebuffer shaders)
-	attribVertexColor       uint32 // reference to color input for shader variable (Framebuffer shaders)
 	attribVertexPositionFBO uint32 // reference to position input for shader variable (Screen shaders)
 	attribVertexTextureFBO  uint32 // reference to texture (replacement for Color) input for shader variable (Screen shaders)
+}
+
+var (
+	ctxScreen      = &ContextScreen{}
+	ctxFramebuffer = &ContextFramebuffer{}
 )
 
 func init() {
@@ -127,15 +140,14 @@ func setup() {
 	// enable textures
 	gl.Enable(gl.TEXTURE_2D)
 
-	// create shader programs
-	setupProgram_Screen()
-	setupProgram_Framebuffer()
+	// prepare screen program and buffers (vbo, ibo)
+	ctxScreen.setupProgram()
+	ctxScreen.setupBuffers()
 
-	// prepare vbo/ibo buffers
-	quadsFramebuffer.setupBuffers()
-
-	// caculate camera matrices
-	setupCamera(90, mgl32.Vec3{2, 2, 2}, mgl32.Vec3{0, 0, -1})
+	// prepare framebuffer program and buffers (vbo, ibo, fbo) and camera
+	ctxFramebuffer.setupProgram()
+	ctxFramebuffer.setupBuffers()
+	ctxFramebuffer.setupCamera(90, mgl32.Vec3{2, 2, 2}, mgl32.Vec3{0, 0, -1})
 
 }
 
@@ -209,11 +221,34 @@ func (q *FrameQuads) DrawRectangle(w float32, h float32, z float32, clr color.Co
 	q.QuadIndices = append(q.QuadIndices, makeQuadIndices(len(q.QuadVertices))...)
 }
 
-// NOTE: it is MANDATORY that this function intializes quadsFramebuffer
 func load() {
+	ctxScreen.load()
+	ctxFramebuffer.load()
+}
+
+func (ctx *ContextScreen) load() {
+
+	// initalize screen quads
+	ctx.quads = &FrameQuads{
+		QuadVertices:    []float32{},
+		QuadTexCoords:   []uint8{},
+		QuadColors:      []uint32{},
+		QuadIndices:     []uint16{},
+		OffsetVertices:  0,
+		OffsetTexCoords: 0,
+		OffsetColors:    0,
+		BytesTotal:      0,
+	}
+
+	// a single quad to cover entire screen in white
+	ctx.quads.DrawRectangle(1, 1, 0, color.NRGBA{1, 1, 1, 1}) // z-depth does will not take effect because we disable DEPTH_TEST for quadsScreen
+
+}
+
+func (ctx *ContextFramebuffer) load() {
 
 	// initalize framebuffer quads
-	quadsFramebuffer = &FrameQuads{
+	ctx.quads = &FrameQuads{
 		QuadVertices:    []float32{},
 		QuadTexCoords:   []uint8{},
 		QuadColors:      []uint32{},
@@ -225,66 +260,40 @@ func load() {
 	}
 
 	// draw red rectangle
-	quadsFramebuffer.DrawRectangle(2, 2, -1.2, color.NRGBA{1, 0, 0, 1})
+	ctx.quads.DrawRectangle(2, 2, -1.2, color.NRGBA{1, 0, 0, 1})
 
 	// draw blue rectangle
-	quadsFramebuffer.DrawRectangle(1, 1, -1.1, color.NRGBA{0, 0, 1, 1})
+	ctx.quads.DrawRectangle(1, 1, -1.1, color.NRGBA{0, 0, 1, 1})
 
 	// print debug info for shapes
-	quadsFramebuffer.DebugPrint()
+	ctx.quads.DebugPrint()
 
 }
 
 func draw() {
 
-	// bind offscreen framebuffer
-	bindProxyScreen()
+	// bind proxy offscreen (framebuffer) and draw elements
+	ctxFramebuffer.bind()
+	ctxFramebuffer.draw()
 
-	// gl.Begin()
-	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)              // bind vertex buffer
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo)      // bind indices buffer
-	gl.EnableVertexAttribArray(attribVertexPosition) // enable vertex position
-	gl.EnableVertexAttribArray(attribVertexTexCoord) // enable vertex texture coordinate
-	gl.EnableVertexAttribArray(attribVertexColor)    // enable vertex color
-
-	// configure and enable vertex position
-	gl.VertexAttribPointer(attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(quadsFramebuffer.OffsetVertices))
-
-	// configure and enable vertex texture coordinate
-	gl.VertexAttribPointer(attribVertexTexCoord, vertexTexCoordSize, gl.UNSIGNED_BYTE, false, 0, gl.PtrOffset(quadsFramebuffer.OffsetTexCoords))
-
-	// configure and enable vertex color
-	gl.VertexAttribPointer(attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(quadsFramebuffer.OffsetColors))
-
-	// draw rectangles
-	gl.DrawElements(gl.TRIANGLES, int32(len(quadsFramebuffer.QuadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(0*bytesUint16))
-
-	// gl.End()
-	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                 // unbind vertex buffer
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)         // unbind indices buffer
-	gl.DisableVertexAttribArray(attribVertexPosition) // disable vertex position
-	gl.DisableVertexAttribArray(attribVertexTexCoord) // disable vertex texture coordinate
-	gl.DisableVertexAttribArray(attribVertexColor)    // disable vertex color
-
-	// unbind proxy screen
-	unbindProxyScreen()
-
-	// using the proxy screen's rendered image, overlay on real screen using a single quad
-	renderProxyToScreen()
+	// bind real screen and draw rasterized texture (output from framebuffer)
+	// in other words, using the proxy screen's rendered image, overlay ontop real screen using a single quad
+	ctxScreen.bind()
+	ctxScreen.draw()
 
 	// check for accumulated OpenGL errors
 	checkGLError()
 
 }
 
-// use proxy offscreen rendering using framebuffers
-func bindProxyScreen() {
+// use proxy offscreen for rendering using framebuffers
+func (ctx *ContextFramebuffer) bind() {
 
 	// bind Framebuffer program
-	gl.UseProgram(programFramebuffer)
+	gl.UseProgram(ctx.program)
 
 	// bind proxy framebuffer instead of default framebuffer
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, fbo)
+	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, ctx.fbo)
 
 	// clear proxy screen to gray
 	gl.ClearColor(0.5, 0.5, 0.5, 1)
@@ -295,11 +304,11 @@ func bindProxyScreen() {
 
 }
 
-// use default (real) screen for rendering by unbinding proxy screen
-func unbindProxyScreen() {
+// use default (real) screen for rendering
+func (ctx *ContextScreen) bind() {
 
 	// bind Screen program
-	gl.UseProgram(programScreen)
+	gl.UseProgram(ctx.program)
 
 	// unbind proxy framebuffer and set back to default framebuffer
 	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
@@ -313,35 +322,69 @@ func unbindProxyScreen() {
 
 }
 
-func renderProxyToScreen() {
+func (ctx *ContextFramebuffer) draw() {
+
+	// gl.Begin()
+	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)              // bind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)      // bind indices buffer
+	gl.EnableVertexAttribArray(ctx.attribVertexPosition) // enable vertex position
+	gl.EnableVertexAttribArray(ctx.attribVertexTexCoord) // enable vertex texture coordinate
+	gl.EnableVertexAttribArray(ctx.attribVertexColor)    // enable vertex color
+
+	// configure and enable vertex position
+	gl.VertexAttribPointer(ctx.attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(ctx.quads.OffsetVertices))
+
+	// configure and enable vertex texture coordinate
+	gl.VertexAttribPointer(ctx.attribVertexTexCoord, vertexTexCoordSize, gl.UNSIGNED_BYTE, false, 0, gl.PtrOffset(ctx.quads.OffsetTexCoords))
+
+	// configure and enable vertex color
+	gl.VertexAttribPointer(ctx.attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(ctx.quads.OffsetColors))
+
+	// draw rectangles
+	gl.DrawElements(gl.TRIANGLES, int32(len(ctx.quads.QuadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(0*bytesUint16))
+
+	// gl.End()
+	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                     // unbind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)             // unbind indices buffer
+	gl.DisableVertexAttribArray(ctx.attribVertexPosition) // disable vertex position
+	gl.DisableVertexAttribArray(ctx.attribVertexTexCoord) // disable vertex texture coordinate
+	gl.DisableVertexAttribArray(ctx.attribVertexColor)    // disable vertex color
+
+}
+
+func (ctx *ContextScreen) draw() {
+
+}
+
+func (ctx *ContextScreen) setupBuffers() {
 
 }
 
 // https://en.wikipedia.org/wiki/Vertex_buffer_object
 // https://www.songho.ca/opengl/gl_vbo.html#create
 // https://learnopengl.com/Advanced-OpenGL/Framebuffers
-func (q *FrameQuads) setupBuffers() {
+func (ctx *ContextFramebuffer) setupBuffers() {
 
 	// use PROXY program
-	gl.UseProgram(programFramebuffer)
+	gl.UseProgram(ctx.program)
 
 	// to be more efficient, vertices position are in float32, texture coordinate in uint8, and color is in uint32
-	q.BytesTotal = (len(q.QuadVertices) * bytesFloat32) + (len(q.QuadTexCoords) * bytesUint8) + (len(q.QuadColors) * bytesUint32)
+	ctx.quads.BytesTotal = (len(ctx.quads.QuadVertices) * bytesFloat32) + (len(ctx.quads.QuadTexCoords) * bytesUint8) + (len(ctx.quads.QuadColors) * bytesUint32)
 
 	// data offsets
-	q.OffsetVertices = 0 * bytesFloat32
-	q.OffsetTexCoords = q.OffsetVertices + len(q.QuadVertices)*bytesFloat32
-	q.OffsetColors = q.OffsetTexCoords + len(q.QuadTexCoords)*bytesUint8
+	ctx.quads.OffsetVertices = 0 * bytesFloat32
+	ctx.quads.OffsetTexCoords = ctx.quads.OffsetVertices + len(ctx.quads.QuadVertices)*bytesFloat32
+	ctx.quads.OffsetColors = ctx.quads.OffsetTexCoords + len(ctx.quads.QuadTexCoords)*bytesUint8
 
 	// create FBO and bind to it
-	gl.GenFramebuffersEXT(1, &fbo) // offscreen rendering use framebuffer extension
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, fbo)
+	gl.GenFramebuffersEXT(1, &ctx.fbo) // offscreen rendering use framebuffer extension
+	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, ctx.fbo)
 
 	// attach texture to FBO (color buffer component)
-	attachTexture()
+	ctx.attachTexture()
 
 	/// attach renderbuffer to FBO (combined depth and stencil buffer component)
-	attachRenderbuffer()
+	ctx.attachRenderbuffer()
 
 	// check if FBO is ready and valid
 	if gl.CheckFramebufferStatusEXT(gl.FRAMEBUFFER_EXT) != gl.FRAMEBUFFER_COMPLETE_EXT {
@@ -349,20 +392,20 @@ func (q *FrameQuads) setupBuffers() {
 	}
 
 	// create VBOs
-	gl.GenBuffers(1, &vbo) // buffer for vertex position, texture coordinate, and color
-	gl.GenBuffers(1, &ibo) // buffer for vertex indices
+	gl.GenBuffers(1, &ctx.vbo) // buffer for vertex position, texture coordinate, and color
+	gl.GenBuffers(1, &ctx.ibo) // buffer for vertex indices
 
 	// copy vertex data to VBO
-	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-	gl.BufferData(gl.ARRAY_BUFFER, q.BytesTotal, nil, gl.STATIC_DRAW)                                              // initalize but do not copy any data
-	gl.BufferSubData(gl.ARRAY_BUFFER, q.OffsetVertices, len(q.QuadVertices)*bytesFloat32, gl.Ptr(q.QuadVertices))  // copy vertices starting from 0 offest
-	gl.BufferSubData(gl.ARRAY_BUFFER, q.OffsetTexCoords, len(q.QuadTexCoords)*bytesUint8, gl.Ptr(q.QuadTexCoords)) // copy textures after vertices
-	gl.BufferSubData(gl.ARRAY_BUFFER, q.OffsetColors, len(q.QuadColors)*bytesUint32, gl.Ptr(q.QuadColors))         // copy colors after textures
+	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)
+	gl.BufferData(gl.ARRAY_BUFFER, ctx.quads.BytesTotal, nil, gl.STATIC_DRAW)                                                              // initalize but do not copy any data
+	gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetVertices, len(ctx.quads.QuadVertices)*bytesFloat32, gl.Ptr(ctx.quads.QuadVertices))  // copy vertices starting from 0 offest
+	gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetTexCoords, len(ctx.quads.QuadTexCoords)*bytesUint8, gl.Ptr(ctx.quads.QuadTexCoords)) // copy textures after vertices
+	gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetColors, len(ctx.quads.QuadColors)*bytesUint32, gl.Ptr(ctx.quads.QuadColors))         // copy colors after textures
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)
 
 	// copy index data to VBO
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo)
-	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(q.QuadIndices)*bytesUint16, gl.Ptr(q.QuadIndices), gl.STATIC_DRAW)
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)
+	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(ctx.quads.QuadIndices)*bytesUint16, gl.Ptr(ctx.quads.QuadIndices), gl.STATIC_DRAW)
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
 	// unbind FBO
@@ -374,11 +417,11 @@ func (q *FrameQuads) setupBuffers() {
 }
 
 // should only be called by setupBuffers()
-func attachTexture() {
+func (ctx *ContextFramebuffer) attachTexture() {
 
 	// create texture for framebuffer attachment, and bind to it
-	gl.GenTextures(1, &fboTexture)
-	gl.BindTexture(gl.TEXTURE_2D, fboTexture)
+	gl.GenTextures(1, &ctx.fboTexture)
+	gl.BindTexture(gl.TEXTURE_2D, ctx.fboTexture)
 
 	// initalize texture (memory space and min/mag filters)
 	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGB, windowWidth, windowHeight, 0, gl.RGB, gl.UNSIGNED_BYTE, nil)
@@ -389,16 +432,16 @@ func attachTexture() {
 	gl.BindTexture(gl.TEXTURE_2D, 0)
 
 	// attach texture to framebuffer
-	gl.FramebufferTexture2DEXT(gl.FRAMEBUFFER_EXT, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTexture, 0)
+	gl.FramebufferTexture2DEXT(gl.FRAMEBUFFER_EXT, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
 
 }
 
 // should only be called by setupBuffers()
-func attachRenderbuffer() {
+func (ctx *ContextFramebuffer) attachRenderbuffer() {
 
 	// create renderbuffer for depth and stencil testing. and bind to it
-	gl.GenRenderbuffersEXT(1, &fboRenderbuffer)
-	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, fboRenderbuffer)
+	gl.GenRenderbuffersEXT(1, &ctx.fboRenderbuffer)
+	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, ctx.fboRenderbuffer)
 
 	// initalize renderbuffer memory space
 	gl.RenderbufferStorageEXT(gl.RENDERBUFFER_EXT, gl.DEPTH24_STENCIL8, windowWidth, windowHeight)
@@ -407,47 +450,51 @@ func attachRenderbuffer() {
 	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, 0)
 
 	// attach renderbuffer to framebuffer
-	gl.FramebufferRenderbufferEXT(gl.FRAMEBUFFER_EXT, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER_EXT, fboRenderbuffer)
+	gl.FramebufferRenderbufferEXT(gl.FRAMEBUFFER_EXT, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER_EXT, ctx.fboRenderbuffer)
 
 }
 
-func setupProgram_Screen() {
+func (ctx *ContextScreen) setupProgram() {
 
 	var err error
 
 	// configure program, load shaders, and link attributes
-	programScreen, err = newProgram(vertexShaderScreen, fragmentShaderScreen)
+	ctx.program, err = newProgram(vertexShaderScreen, fragmentShaderScreen)
 	if err != nil {
 		panic(err)
 	}
-	gl.UseProgram(programScreen)
+	gl.UseProgram(ctx.program)
 
 	// get attribute index for later use
-	attribVertexPositionFBO = uint32(gl.GetAttribLocation(programScreen, gl.Str("vertexPositionFBO\x00")))
-	attribVertexTextureFBO = uint32(gl.GetAttribLocation(programScreen, gl.Str("vertexTextureFBO\x00")))
+	ctx.attribVertexPositionFBO = uint32(gl.GetAttribLocation(ctx.program, gl.Str("vertexPositionFBO\x00")))
+	ctx.attribVertexTextureFBO = uint32(gl.GetAttribLocation(ctx.program, gl.Str("vertexTextureFBO\x00")))
+
+	// debug print
+	fmt.Printf("attribVertexPositionFBO: %v attribVertexTextureFBO: %v\n", ctx.attribVertexPositionFBO, ctx.attribVertexTextureFBO)
 
 	// unbind program
 	gl.UseProgram(0)
 
 }
 
-func setupProgram_Framebuffer() {
+func (ctx *ContextFramebuffer) setupProgram() {
 
 	var err error
 
 	// configure program, load shaders, and link attributes
-	programFramebuffer, err = newProgram(vertexShaderFramebuffer, fragmentShaderFramebuffer)
+	ctx.program, err = newProgram(vertexShaderFramebuffer, fragmentShaderFramebuffer)
 	if err != nil {
 		panic(err)
 	}
-	gl.UseProgram(programFramebuffer)
+	gl.UseProgram(ctx.program)
 
 	// get attribute index for later use
-	attribVertexPosition = uint32(gl.GetAttribLocation(programFramebuffer, gl.Str("vertexPosition\x00")))
-	attribVertexTexCoord = uint32(gl.GetAttribLocation(programFramebuffer, gl.Str("vertexTexCoord\x00")))
-	attribVertexColor = uint32(gl.GetAttribLocation(programFramebuffer, gl.Str("vertexColor\x00")))
+	ctx.attribVertexPosition = uint32(gl.GetAttribLocation(ctx.program, gl.Str("vertexPosition\x00")))
+	ctx.attribVertexTexCoord = uint32(gl.GetAttribLocation(ctx.program, gl.Str("vertexTexCoord\x00")))
+	ctx.attribVertexColor = uint32(gl.GetAttribLocation(ctx.program, gl.Str("vertexColor\x00")))
 
-	fmt.Printf("attribVertexPosition: %v attribVertexTexCoord: %v attribVertexColor: %v\n", attribVertexPosition, attribVertexTexCoord, attribVertexColor)
+	// debug print
+	fmt.Printf("attribVertexPosition: %v attribVertexTexCoord: %v attribVertexColor: %v\n", ctx.attribVertexPosition, ctx.attribVertexTexCoord, ctx.attribVertexColor)
 
 	// unbind program
 	gl.UseProgram(0)
@@ -491,27 +538,27 @@ func setupProgram_Framebuffer() {
 // https://learnopengl.com/Getting-started/Camera
 // https://stackoverflow.com/questions/59262874/how-can-i-use-screen-space-coordinates-directly-with-opengl
 // https://www.codeguru.com/cpp/misc/misc/graphics/article.php/c10123/Deriving-Projection-Matrices.htm#page-2
-func setupCamera(fov float32, cameraposition mgl32.Vec3, target mgl32.Vec3) {
+func (ctx *ContextFramebuffer) setupCamera(fov float32, cameraposition mgl32.Vec3, target mgl32.Vec3) {
 
 	// use PROXY program
-	gl.UseProgram(programFramebuffer)
+	gl.UseProgram(ctx.program)
 
 	// CREATE (PRESPECTIVE) PROJECTION MATRIX
 	// a matrix to transform from eye to NDC coordinates
 	projection := mgl32.Perspective(mgl32.DegToRad(fov), float32(windowWidth)/windowHeight, 0.1, 10.0)
-	projectionUniform := gl.GetUniformLocation(programFramebuffer, gl.Str("projection\x00"))
+	projectionUniform := gl.GetUniformLocation(ctx.program, gl.Str("projection\x00"))
 	gl.UniformMatrix4fv(projectionUniform, 1, false, &projection[0])
 
 	// CREATE (CAMERA) VIEW MATRIX
 	// a matrix to transform from eye to NDC coordinates
 	camera := mgl32.LookAtV(cameraposition, target, mgl32.Vec3{0, 1, 0})
-	cameraUniform := gl.GetUniformLocation(programFramebuffer, gl.Str("camera\x00"))
+	cameraUniform := gl.GetUniformLocation(ctx.program, gl.Str("camera\x00"))
 	gl.UniformMatrix4fv(cameraUniform, 1, false, &camera[0])
 
 	// CREATE (OBJECT) MODEL MATRIX
 	// a matrix to transform from object to eye coordinates
 	model := mgl32.Ident4()
-	modelUniform := gl.GetUniformLocation(programFramebuffer, gl.Str("model\x00"))
+	modelUniform := gl.GetUniformLocation(ctx.program, gl.Str("model\x00"))
 	gl.UniformMatrix4fv(modelUniform, 1, false, &model[0])
 
 	// unbind PROXY program
