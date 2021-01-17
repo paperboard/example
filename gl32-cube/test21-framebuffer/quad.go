@@ -13,34 +13,37 @@ import (
 )
 
 const (
-	windowWidth        = 600
-	windowHeight       = 400
-	bytesFloat32       = 4 // a float32 is 4 bytes
-	bytesUint32        = 4 // a uint32 is 4 bytes
-	bytesUint16        = 2 // a uint16 is 2 bytes
-	bytesUint8         = 1 // a uint8 has 1 byte
-	vertexPositionSize = 3 // x,y,z = points in 3D space
-	vertexTexCoordSize = 2 // x,y = texture coordinates
-	vertexColorSize    = 4 // r,g,b,a = color w/ transparency
-	verticesPerQuad    = 4 // a rectangle has 4 vertices
-	indicesPerQuad     = 6 // a rectangle has 6 indices
+	windowWidth        = 600 // intended game screen width, but will become larger on high-dpi screens
+	windowHeight       = 400 // intended game screen height, but will become larger on high-dpi screens
+	bytesFloat32       = 4   // a float32 is 4 bytes
+	bytesUint32        = 4   // a uint32 is 4 bytes
+	bytesUint16        = 2   // a uint16 is 2 bytes
+	bytesUint8         = 1   // a uint8 has 1 byte
+	vertexPositionSize = 3   // x,y,z = points in 3D space
+	vertexTexCoordSize = 2   // x,y = texture coordinates
+	vertexColorSize    = 4   // r,g,b,a = color w/ transparency
+	verticesPerQuad    = 4   // a rectangle has 4 vertices
+	indicesPerQuad     = 6   // a rectangle has 6 indices
 )
 
-// ElementQuads hold draw elements used by "proxy screen" (ContextFramebuffer)
-type ElementQuads struct {
-	ScreenQuad   // inherit from ScreenQuad
-	QuadColors   []uint32
-	OffsetColors int
-}
+var (
+	dpiScaleX float32 // to adjust width for high dpi/resolution monitors
+	dpiScaleY float32 // to adjust height for high dpi/resolution monitors
+)
 
-// ScreenQuad hold a single quad (2 triangles) element used by "real screen" (ContextScreen)
-type ScreenQuad struct {
-	QuadVertices    []float32
-	QuadTexCoords   []uint8
-	QuadIndices     []uint16
-	OffsetVertices  int
-	OffsetTexCoords int
-	BytesTotal      int
+var (
+	ctxScreen      = &ContextScreen{}
+	ctxFramebuffer = &ContextFramebuffer{}
+)
+
+// ContextScreen is a real screen
+type ContextScreen struct {
+	quads                *ElementQuads
+	program              uint32 // connects vertex and fragment shaders (Screen shaders)
+	vbo                  uint32 // stores vertex position, color, texture, and normal array data
+	ibo                  uint32 // stores sets of indicies to draw that make up elements (e.g. triangles)
+	attribVertexPosition uint32 // reference to position input for shader variable (Screen shaders)
+	attribVertexTexCoord uint32 // reference to texture coordinate input for shader variable (Screen shaders)
 }
 
 // ContextFramebuffer is a proxy screen
@@ -57,20 +60,24 @@ type ContextFramebuffer struct {
 	attribVertexColor    uint32 // reference to color input for shader variable (Framebuffer shaders)
 }
 
-// ContextScreen is a real screen
-type ContextScreen struct {
-	quads                *ScreenQuad
-	program              uint32 // connects vertex and fragment shaders (Screen shaders)
-	vbo                  uint32 // stores vertex position, color, texture, and normal array data
-	ibo                  uint32 // stores sets of indicies to draw that make up elements (e.g. triangles)
-	attribVertexPosition uint32 // reference to position input for shader variable (Screen shaders)
-	attribVertexTexCoord uint32 // reference to texture coordinate input for shader variable (Screen shaders)
-}
+// ElementQuads hold draw elements used by both "real screen" (ContextScreen) and "proxy screen" (ContextFramebuffer)
+type ElementQuads struct {
+	QuadVertices    []float32
+	QuadTexCoords   []uint8
+	QuadIndices     []uint16
+	OffsetVertices  int
+	OffsetTexCoords int
+	OffsetIndices   int
 
-var (
-	ctxScreen      = &ContextScreen{}
-	ctxFramebuffer = &ContextFramebuffer{}
-)
+	// this is total bytes required for VBO buffer
+	// e.g. ContextScreen will add up bytes for both QuadVertices + QuadTexCoords.
+	//      ContextFramebuffer will add up bytes for QuadVertices + QuadTexCoords + QuadColors.
+	BytesTotal int
+
+	// QuadColors is only used by ContextFramebuffer
+	QuadColors   []uint32
+	OffsetColors int
+}
 
 func init() {
 	// glfw must be on main thread
@@ -97,6 +104,18 @@ func main() {
 		panic(err)
 	}
 	window.MakeContextCurrent()
+
+	// pixel dimension and texel dimensions are not the same in high resolution monitors
+	// so we must account for that in many of the functions we use.
+	// e.g. gl.Viewport, gl.Scissor, gl.ReadPixels, gl.LineWidth, gl.RenderbufferStorage, and gl.TexImage2D
+	dpiScaleX, dpiScaleY = window.GetContentScale()
+
+	// ensure framebuffer uses maximum window size
+	window.SetFramebufferSizeCallback(framebufferSizeCallback)
+	window.SetSizeCallback(func(_ *glfw.Window, width, height int) {
+		println("asdasdasda")
+		//fmt.Printf("HPDI SIZE: %v %v\n", width, height)
+	})
 
 	// initialize OpenGL
 	err = gl.Init()
@@ -125,6 +144,15 @@ func main() {
 
 	}
 
+}
+
+// on window size change (by OS or user resize) this callback executes
+func framebufferSizeCallback(_ *glfw.Window, width int, height int) {
+	println("asdasdasda")
+	//fmt.Printf("FRAMEBUFFER SIZE: %v %v\n", width, height)
+	// make sure the viewport matches the new window dimensions; note that width and
+	// height will be significantly larger than specified on retina displays.
+	//gl.Viewport(0, 0, int32(width), int32(height))
 }
 
 func setup() {
@@ -234,13 +262,14 @@ func load() {
 func (ctx *ContextScreen) load() {
 
 	// initalize screen quads
-	ctx.quads = &ScreenQuad{
+	ctx.quads = &ElementQuads{
 		QuadVertices:    []float32{},
 		QuadTexCoords:   []uint8{},
 		QuadIndices:     []uint16{},
 		OffsetVertices:  0,
 		OffsetTexCoords: 0,
-		BytesTotal:      0, // will eventually be the total bytes needed for VBO buffer (QuadVertices + QuadTexCoords)
+		OffsetIndices:   0,
+		BytesTotal:      0, // will be calculated to the total bytes needed for VBO buffer (QuadVertices + QuadTexCoords)
 	}
 
 	// a single quad to cover entire screen in white
@@ -254,16 +283,15 @@ func (ctx *ContextFramebuffer) load() {
 
 	// initalize framebuffer quads
 	ctx.quads = &ElementQuads{
-		ScreenQuad: ScreenQuad{
-			QuadVertices:    []float32{},
-			QuadTexCoords:   []uint8{},
-			QuadIndices:     []uint16{},
-			OffsetVertices:  0,
-			OffsetTexCoords: 0,
-			BytesTotal:      0, // will eventually be the total bytes needed for VBO buffer (QuadVertices + QuadTexCoords + QuadColors)
-		},
-		QuadColors:   []uint32{},
-		OffsetColors: 0,
+		QuadVertices:    []float32{},
+		QuadTexCoords:   []uint8{},
+		QuadIndices:     []uint16{},
+		OffsetVertices:  0,
+		OffsetTexCoords: 0,
+		OffsetIndices:   0,
+		BytesTotal:      0, // will be calculated to the total bytes needed for VBO buffer (QuadVertices + QuadTexCoords + QuadColors)
+		QuadColors:      []uint32{},
+		OffsetColors:    0,
 	}
 
 	// draw red rectangle
@@ -348,7 +376,7 @@ func (ctx *ContextFramebuffer) draw() {
 	gl.VertexAttribPointer(ctx.attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(ctx.quads.OffsetColors))
 
 	// draw rectangles
-	gl.DrawElements(gl.TRIANGLES, int32(len(ctx.quads.QuadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(0*bytesUint16))
+	gl.DrawElements(gl.TRIANGLES, int32(len(ctx.quads.QuadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(ctx.quads.OffsetIndices*bytesUint16))
 
 	// gl.End()
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                     // unbind vertex buffer
@@ -375,7 +403,7 @@ func (ctx *ContextScreen) draw() {
 	gl.VertexAttribPointer(ctx.attribVertexTexCoord, vertexTexCoordSize, gl.UNSIGNED_BYTE, false, 0, gl.PtrOffset(ctx.quads.OffsetTexCoords))
 
 	// draw rectangles
-	gl.DrawElements(gl.TRIANGLES, int32(len(ctx.quads.QuadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(0*bytesUint16))
+	gl.DrawElements(gl.TRIANGLES, int32(len(ctx.quads.QuadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(ctx.quads.OffsetIndices*bytesUint16))
 
 	// gl.End()
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                     // unbind vertex buffer
@@ -486,7 +514,7 @@ func (ctx *ContextFramebuffer) attachTexture() {
 	gl.BindTexture(gl.TEXTURE_2D, ctx.fboTexture)
 
 	// initalize texture (memory space and min/mag filters)
-	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGB, windowWidth, windowHeight, 0, gl.RGB, gl.UNSIGNED_BYTE, nil)
+	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGB, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY), 0, gl.RGB, gl.UNSIGNED_BYTE, nil)
 	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
 	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
@@ -507,7 +535,7 @@ func (ctx *ContextFramebuffer) attachRenderbuffer() {
 	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, ctx.fboRenderbuffer)
 
 	// initalize renderbuffer memory space
-	gl.RenderbufferStorageEXT(gl.RENDERBUFFER_EXT, gl.DEPTH24_STENCIL8, windowWidth, windowHeight)
+	gl.RenderbufferStorageEXT(gl.RENDERBUFFER_EXT, gl.DEPTH24_STENCIL8, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY))
 
 	// unbind renderbuffer
 	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, 0)
@@ -533,7 +561,7 @@ func (ctx *ContextScreen) setupProgram() {
 	ctx.attribVertexTexCoord = uint32(gl.GetAttribLocation(ctx.program, gl.Str("vertexTexCoord\x00")))
 
 	// debug print
-	fmt.Printf("attribVertexPosition: %v attribVertexTexture: %v\n", ctx.attribVertexPosition, ctx.attribVertexTexCoord)
+	fmt.Printf("attribVertexPosition: %v attribVertexTexCoord: %v\n", ctx.attribVertexPosition, ctx.attribVertexTexCoord)
 
 	// unbind program
 	gl.UseProgram(0)
@@ -603,12 +631,15 @@ func (ctx *ContextFramebuffer) setupProgram() {
 // https://www.codeguru.com/cpp/misc/misc/graphics/article.php/c10123/Deriving-Projection-Matrices.htm#page-2
 func (ctx *ContextFramebuffer) setupCamera(fov float32, cameraposition mgl32.Vec3, target mgl32.Vec3) {
 
+	// ensure viewport is maximum screen width and height
+	gl.Viewport(0, 0, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleX))
+
 	// use PROXY program
 	gl.UseProgram(ctx.program)
 
 	// CREATE (PRESPECTIVE) PROJECTION MATRIX
 	// a matrix to transform from eye to NDC coordinates
-	projection := mgl32.Perspective(mgl32.DegToRad(fov), float32(windowWidth)/windowHeight, 0.1, 10.0)
+	projection := mgl32.Perspective(mgl32.DegToRad(fov), float32(windowWidth*dpiScaleX)/float32(windowHeight*dpiScaleY), 0.1, 10.0)
 	projectionUniform := gl.GetUniformLocation(ctx.program, gl.Str("projection\x00"))
 	gl.UniformMatrix4fv(projectionUniform, 1, false, &projection[0])
 
