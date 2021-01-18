@@ -177,7 +177,7 @@ func setup() {
 	// prepare framebuffer program and buffers (vbo, ibo, fbo) and camera
 	ctxFramebuffer.setupProgram()
 	ctxFramebuffer.setupBuffers()
-	ctxFramebuffer.setupCamera(90, mgl32.Vec3{2, 2, 2}, mgl32.Vec3{0, 0, -1})
+	ctxFramebuffer.setupCamera(90, mgl32.Vec3{0, 0, 0.5}, mgl32.Vec3{0.1, 0.1, -1})
 
 }
 
