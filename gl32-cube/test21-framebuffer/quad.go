@@ -110,12 +110,9 @@ func main() {
 	// e.g. gl.Viewport, gl.Scissor, gl.ReadPixels, gl.LineWidth, gl.RenderbufferStorage, and gl.TexImage2D
 	dpiScaleX, dpiScaleY = window.GetContentScale()
 
-	// ensure framebuffer uses maximum window size
-	window.SetFramebufferSizeCallback(framebufferSizeCallback)
-	window.SetSizeCallback(func(_ *glfw.Window, width, height int) {
-		println("asdasdasda")
-		//fmt.Printf("HPDI SIZE: %v %v\n", width, height)
-	})
+	// ensure framebuffer and screen uses maximum window size
+	window.SetFramebufferSizeCallback(fboSizeCallback)
+	window.SetSizeCallback(fboSizeCallback)
 
 	// initialize OpenGL
 	err = gl.Init()
@@ -147,12 +144,12 @@ func main() {
 }
 
 // on window size change (by OS or user resize) this callback executes
-func framebufferSizeCallback(_ *glfw.Window, width int, height int) {
-	println("asdasdasda")
-	//fmt.Printf("FRAMEBUFFER SIZE: %v %v\n", width, height)
+func fboSizeCallback(_ *glfw.Window, width int, height int) {
+	// TODO: test this function
+	panic("framebufferSizeCallback")
 	// make sure the viewport matches the new window dimensions; note that width and
 	// height will be significantly larger than specified on retina displays.
-	//gl.Viewport(0, 0, int32(width), int32(height))
+	gl.Viewport(0, 0, int32(width), int32(height))
 }
 
 func setup() {
