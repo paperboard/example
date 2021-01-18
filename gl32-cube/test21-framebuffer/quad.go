@@ -99,7 +99,7 @@ func main() {
 	glfw.WindowHint(glfw.ContextVersionMinor, 1)
 
 	// create window handle
-	window, err := glfw.CreateWindow(windowWidth, windowHeight, "Triangle 3D", nil, nil)
+	window, err := glfw.CreateWindow(windowWidth, windowHeight, "Quad 3D", nil, nil)
 	if err != nil {
 		panic(err)
 	}
