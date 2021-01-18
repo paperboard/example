@@ -24,6 +24,7 @@ const (
 	vertexColorSize    = 4   // r,g,b,a = color w/ transparency
 	verticesPerQuad    = 4   // a rectangle has 4 vertices
 	indicesPerQuad     = 6   // a rectangle has 6 indices
+	msaaSamples        = 0   // use 4 subsamples per pixel, for multi-sample anti-aliasing (MSAA), to smooth edges
 )
 
 var (
@@ -93,10 +94,15 @@ func main() {
 	}
 	defer glfw.Terminate()
 
-	// use OpenGL v2.1
-	glfw.WindowHint(glfw.Resizable, glfw.False)
+	// suggest glfw to use OpenGL v2.1
 	glfw.WindowHint(glfw.ContextVersionMajor, 2)
 	glfw.WindowHint(glfw.ContextVersionMinor, 1)
+
+	// suggest glfw to disable window resizing
+	glfw.WindowHint(glfw.Resizable, glfw.False)
+
+	// suggest glfw to enable anti-aliasing
+	glfw.WindowHint(glfw.Samples, msaaSamples)
 
 	// create window handle
 	window, err := glfw.CreateWindow(windowWidth, windowHeight, "Triangle 3D", nil, nil)
@@ -120,6 +126,15 @@ func main() {
 		panic(err)
 	}
 	fmt.Println("OpenGL version", gl.GoStr(gl.GetString(gl.VERSION)))
+
+	// check for multisample support in extensions
+	// https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_multisample.txt
+	glextensions := gl.GoStr(gl.GetString(gl.EXTENSIONS))
+	msaaExtentionFramebuffer := `GL_EXT_framebuffer_multisample`
+	msaaExtensionTexture := `GL_ARB_multisample`
+	if !strings.Contains(glextensions, msaaExtentionFramebuffer) || !strings.Contains(glextensions, msaaExtensionTexture) {
+		panic("OpenGL MSAA extensions not found")
+	}
 
 	// load game objects
 	load()
@@ -154,30 +169,86 @@ func fboSizeCallback(_ *glfw.Window, width int, height int) {
 
 func setup() {
 
+	// prepare screen program and buffers (vbo, ibo)
+	ctxScreen.setupProgram()
+	ctxScreen.setupBuffers()
+
+	// set screen globals
+	ctxScreen.setupGlobals()
+
+	// prepare framebuffer program and buffers (vbo, ibo, fbo) and camera
+	ctxFramebuffer.setupProgram()
+	ctxFramebuffer.setupBuffers()
+	ctxFramebuffer.setupCamera(90, mgl32.Vec3{2, 2, 2}, mgl32.Vec3{0, 0, -1})
+
+	// set framebuffer globals
+	ctxFramebuffer.setupGlobals()
+
+}
+
+func (ctx *ContextScreen) setupGlobals() {
+
+	// one-time clear screen to black
+	gl.ClearColor(0, 0, 0, 1)
+
+	// enable multisampled textures
+	gl.Enable(gl.TEXTURE_2D_MULTISAMPLE)
+
+	// enable anti-aliasing (multi-sampling)
+	gl.Enable(gl.MULTISAMPLE_ARB)
+
+}
+
+func (ctx *ContextFramebuffer) setupGlobals() {
+
 	// one-time clear screen to yellow
 	gl.ClearColor(1, 1, 0, 1)
-	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+
+	// enable multisampled textures
+	gl.Enable(gl.TEXTURE_2D_MULTISAMPLE)
+
+	// enable anti-aliasing (multi-sampling)
+	gl.Enable(gl.MULTISAMPLE_ARB)
+
+	// if multiple shapes have same z-value, take their
+	// draw order in account and show if possible
+	gl.DepthFunc(gl.LEQUAL)
+
+}
+
+// use default (real) screen for rendering
+func (ctx *ContextScreen) bind() {
+
+	// bind default screen framebuffer
+	gl.BindFramebufferEXT(gl.FRAMEBUFFER, 0)
+
+	// bind screen program
+	gl.UseProgram(ctx.program)
+
+	// disable depth test
+	gl.Disable(gl.DEPTH_TEST)
+
+	// clear screen
+	gl.Clear(gl.COLOR_BUFFER_BIT)
+
+}
+
+// use proxy offscreen for rendering using framebuffers
+func (ctx *ContextFramebuffer) bind() {
+
+	// bind proxy framebuffer instead of default framebuffer
+	gl.BindFramebufferEXT(gl.FRAMEBUFFER, ctx.fbo)
+
+	// bind framebuffer program
+	gl.UseProgram(ctx.program)
 
 	// do not render parts of shapes (pixels) that will
 	// anyhow be covered up by higher z-axis shapes (pixels)
 	// so that we are drawing pixels more efficiently
 	gl.Enable(gl.DEPTH_TEST)
 
-	// if multiple shapes have same z-value, take their
-	// draw order in account and show if possible
-	gl.DepthFunc(gl.LEQUAL)
-
-	// enable textures
-	gl.Enable(gl.TEXTURE_2D)
-
-	// prepare screen program and buffers (vbo, ibo)
-	ctxScreen.setupProgram()
-	ctxScreen.setupBuffers()
-
-	// prepare framebuffer program and buffers (vbo, ibo, fbo) and camera
-	ctxFramebuffer.setupProgram()
-	ctxFramebuffer.setupBuffers()
-	ctxFramebuffer.setupCamera(90, mgl32.Vec3{2, 2, 2}, mgl32.Vec3{0, 0, -1})
+	// clear proxy screen color and depth
+	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
 }
 
@@ -321,43 +392,7 @@ func draw() {
 	ctxScreen.draw()
 
 	// check for accumulated OpenGL errors
-	checkGLError()
-
-}
-
-// use proxy offscreen for rendering using framebuffers
-func (ctx *ContextFramebuffer) bind() {
-
-	// bind Framebuffer program
-	gl.UseProgram(ctx.program)
-
-	// bind proxy framebuffer instead of default framebuffer
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, ctx.fbo)
-
-	// clear proxy screen to gray
-	gl.ClearColor(0.5, 0.5, 0.5, 1) // TODO: can set this once during creation instead of each bind
-	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-
-	// ensure depth test is enabled during proxy screen usage
-	gl.Enable(gl.DEPTH_TEST)
-
-}
-
-// use default (real) screen for rendering
-func (ctx *ContextScreen) bind() {
-
-	// bind Screen program
-	gl.UseProgram(ctx.program)
-
-	// unbind proxy framebuffer and set back to default framebuffer
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
-
-	// clear screen to black
-	gl.ClearColor(0, 0, 0, 1)     // TODO: can set this once during creation instead of each bind
-	gl.Clear(gl.COLOR_BUFFER_BIT) // no need to clear depth, we will disable depth
-
-	// disable depth test
-	gl.Disable(gl.DEPTH_TEST)
+	CheckGLError()
 
 }
 
@@ -394,11 +429,11 @@ func (ctx *ContextFramebuffer) draw() {
 func (ctx *ContextScreen) draw() {
 
 	// gl.Begin()
-	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)                  // bind vertex buffer
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)          // bind indices buffer
-	gl.BindTexture(gl.TEXTURE_2D, ctxFramebuffer.fboTexture) // bind shared texture from Framebuffer-FBO (proxy screen) to Screen-FBO (real screen)
-	gl.EnableVertexAttribArray(ctx.attribVertexPosition)     // enable vertex position
-	gl.EnableVertexAttribArray(ctx.attribVertexTexCoord)     // enable vertex texture coordinate
+	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)                              // bind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)                      // bind indices buffer
+	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, ctxFramebuffer.fboTexture) // bind shared texture from Framebuffer-FBO (proxy screen) to Screen-FBO (real screen)
+	gl.EnableVertexAttribArray(ctx.attribVertexPosition)                 // enable vertex position
+	gl.EnableVertexAttribArray(ctx.attribVertexTexCoord)                 // enable vertex texture coordinate
 
 	// configure and enable vertex position
 	gl.VertexAttribPointer(ctx.attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(ctx.quads.OffsetVertices))
@@ -412,19 +447,13 @@ func (ctx *ContextScreen) draw() {
 	// gl.End()
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                     // unbind vertex buffer
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)             // unbind indices buffer
-	gl.BindTexture(gl.TEXTURE_2D, 0)                      // unbind texture
+	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, 0)          // unbind texture
 	gl.DisableVertexAttribArray(ctx.attribVertexPosition) // disable vertex position
 	gl.DisableVertexAttribArray(ctx.attribVertexTexCoord) // disable vertex texture coordinate
 
 }
 
 func (ctx *ContextScreen) setupBuffers() {
-
-	// use SCREEN program
-	gl.UseProgram(ctx.program)
-
-	// unbind FBO
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
 
 	// to be more efficient, vertices position are in float32 and texture coordinate in uint8
 	ctx.quads.BytesTotal = (len(ctx.quads.QuadVertices) * bytesFloat32) + (len(ctx.quads.QuadTexCoords) * bytesUint8)
@@ -452,18 +481,14 @@ func (ctx *ContextScreen) setupBuffers() {
 	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(ctx.quads.QuadIndices)*bytesUint16, gl.Ptr(ctx.quads.QuadIndices), gl.STATIC_DRAW)
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
-	// unbind SCREEN program
-	gl.UseProgram(0)
-
 }
 
 // https://en.wikipedia.org/wiki/Vertex_buffer_object
 // https://www.songho.ca/opengl/gl_vbo.html#create
 // https://learnopengl.com/Advanced-OpenGL/Framebuffers
+// http://www.songho.ca/opengl/gl_fbo.html
+// https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_framebuffer_object.txt
 func (ctx *ContextFramebuffer) setupBuffers() {
-
-	// use PROXY program
-	gl.UseProgram(ctx.program)
 
 	// to be more efficient, vertices position are in float32, texture coordinate in uint8, and color is in uint32
 	ctx.quads.BytesTotal = (len(ctx.quads.QuadVertices) * bytesFloat32) + (len(ctx.quads.QuadTexCoords) * bytesUint8) + (len(ctx.quads.QuadColors) * bytesUint32)
@@ -478,7 +503,7 @@ func (ctx *ContextFramebuffer) setupBuffers() {
 
 	// create FBO and bind to it
 	gl.GenFramebuffersEXT(1, &ctx.fbo) // offscreen rendering use framebuffer extension
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, ctx.fbo)
+	gl.BindFramebufferEXT(gl.FRAMEBUFFER, ctx.fbo)
 
 	// attach texture to FBO (color buffer component)
 	ctx.attachTexture()
@@ -486,10 +511,8 @@ func (ctx *ContextFramebuffer) setupBuffers() {
 	/// attach renderbuffer to FBO (combined depth and stencil buffer component)
 	ctx.attachRenderbuffer()
 
-	// check if FBO is ready and valid
-	if gl.CheckFramebufferStatusEXT(gl.FRAMEBUFFER_EXT) != gl.FRAMEBUFFER_COMPLETE_EXT {
-		panic("Framebuffer (FBO) FATAL ERROR")
-	}
+	// check if FBO status is ready and valid
+	CheckGLFramebufferStatus()
 
 	// create VBOs
 	gl.GenBuffers(1, &ctx.vbo) // buffer for vertex position, texture coordinate, and color
@@ -508,38 +531,32 @@ func (ctx *ContextFramebuffer) setupBuffers() {
 	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(ctx.quads.QuadIndices)*bytesUint16, gl.Ptr(ctx.quads.QuadIndices), gl.STATIC_DRAW)
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
-	// unbind FBO
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
-
-	// unbind PROXY program
-	gl.UseProgram(0)
-
 }
 
-// http://www.songho.ca/opengl/gl_fbo.html
 func (ctx *ContextFramebuffer) attachTexture() {
 
 	// create texture for framebuffer attachment, and bind to it
 	// NOTE: a texture can be attached to multiple FBOs, where its image storage is shared
 	//       this is an important, we use it to render the final drawn texture from Framebuffer-FBO to Screen-FBO.
 	gl.GenTextures(1, &ctx.fboTexture)
-	gl.BindTexture(gl.TEXTURE_2D, ctx.fboTexture)
+	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, ctx.fboTexture)
 
 	// initalize texture (memory space and min/mag filters)
-	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGB, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY), 0, gl.RGB, gl.UNSIGNED_BYTE, nil)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+	gl.TexImage2DMultisample(gl.TEXTURE_2D_MULTISAMPLE, msaaSamples, gl.RGB, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY), true)
+
+	//glTexParameteri(gl.TEXTURE_2D_MULTISAMPLE, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	//glTexParameteri(gl.TEXTURE_2D_MULTISAMPLE, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	//gl.TexParameteri(gl.TEXTURE_2D_MULTISAMPLE, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+	//gl.TexParameteri(gl.TEXTURE_2D_MULTISAMPLE, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+
+	// unbind texture
+	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, 0)
 
 	// attach texture to framebuffer
-	gl.FramebufferTexture2DEXT(gl.FRAMEBUFFER_EXT, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
-
-	// NOTE: do not unbind texture for this framebuffer
-	// remember, each "screen" has its own state machine, and therefore
-	// we can leave this texture always binded
+	gl.FramebufferTexture2DEXT(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D_MULTISAMPLE, ctx.fboTexture, 0)
 
 }
 
-// http://www.songho.ca/opengl/gl_fbo.html
 func (ctx *ContextFramebuffer) attachRenderbuffer() {
 
 	// create renderbuffer for depth and stencil testing. and bind to it
@@ -547,13 +564,13 @@ func (ctx *ContextFramebuffer) attachRenderbuffer() {
 	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, ctx.fboRenderbuffer)
 
 	// initalize renderbuffer memory space
-	gl.RenderbufferStorageEXT(gl.RENDERBUFFER_EXT, gl.DEPTH24_STENCIL8, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY))
+	gl.RenderbufferStorageMultisampleEXT(gl.RENDERBUFFER_EXT, msaaSamples, gl.DEPTH24_STENCIL8, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY))
 
 	// unbind renderbuffer
 	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, 0)
 
 	// attach renderbuffer to framebuffer
-	gl.FramebufferRenderbufferEXT(gl.FRAMEBUFFER_EXT, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER_EXT, ctx.fboRenderbuffer)
+	gl.FramebufferRenderbufferEXT(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER_EXT, ctx.fboRenderbuffer)
 
 }
 
@@ -575,9 +592,6 @@ func (ctx *ContextScreen) setupProgram() {
 	// debug print
 	fmt.Printf("attribVertexPosition: %v attribVertexTexCoord: %v\n", ctx.attribVertexPosition, ctx.attribVertexTexCoord)
 
-	// unbind program
-	gl.UseProgram(0)
-
 }
 
 func (ctx *ContextFramebuffer) setupProgram() {
@@ -598,9 +612,6 @@ func (ctx *ContextFramebuffer) setupProgram() {
 
 	// debug print
 	fmt.Printf("attribVertexPosition: %v attribVertexTexCoord: %v attribVertexColor: %v\n", ctx.attribVertexPosition, ctx.attribVertexTexCoord, ctx.attribVertexColor)
-
-	// unbind program
-	gl.UseProgram(0)
 
 }
 
@@ -643,9 +654,6 @@ func (ctx *ContextFramebuffer) setupProgram() {
 // https://www.codeguru.com/cpp/misc/misc/graphics/article.php/c10123/Deriving-Projection-Matrices.htm#page-2
 func (ctx *ContextFramebuffer) setupCamera(fov float32, cameraposition mgl32.Vec3, target mgl32.Vec3) {
 
-	// use PROXY program
-	gl.UseProgram(ctx.program)
-
 	// CREATE (PRESPECTIVE) PROJECTION MATRIX
 	// a matrix to transform from eye to NDC coordinates
 	projection := mgl32.Perspective(mgl32.DegToRad(fov), float32(windowWidth*dpiScaleX)/float32(windowHeight*dpiScaleY), 0.1, 10.0)
@@ -663,9 +671,6 @@ func (ctx *ContextFramebuffer) setupCamera(fov float32, cameraposition mgl32.Vec
 	model := mgl32.Ident4()
 	modelUniform := gl.GetUniformLocation(ctx.program, gl.Str("model\x00"))
 	gl.UniformMatrix4fv(modelUniform, 1, false, &model[0])
-
-	// unbind PROXY program
-	gl.UseProgram(0)
 
 }
 
@@ -812,6 +817,16 @@ var GL_ERROR_LOOKUP = map[uint32]string{
 	0x507: `GL_CONTEXT_LOST`,
 }
 
+func CheckGLError() {
+	for {
+		glerr := gl.GetError()
+		if glerr == gl.NO_ERROR {
+			break
+		}
+		panic_GL_ERROR(glerr)
+	}
+}
+
 func panic_GL_ERROR(errcode uint32) {
 	if errstr, ok := GL_ERROR_LOOKUP[errcode]; ok {
 		panic(fmt.Sprintf("GL_ERROR: %s\n", errstr))
@@ -820,12 +835,32 @@ func panic_GL_ERROR(errcode uint32) {
 	}
 }
 
-func checkGLError() {
+var GL_FRAMEBUFFER_STATUS_LOOKUP = map[uint32]string{
+	0x8CD5: `GL_FRAMEBUFFER_COMPLETE_EXT`,
+	0x8CD6: `GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT_EXT`,
+	0x8CD7: `GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT_EXT`,
+	0x8CD9: `GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS_EXT`,
+	0x8CDA: `GL_FRAMEBUFFER_INCOMPLETE_FORMATS_EXT`,
+	0x8CDB: `GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER_EXT`,
+	0x8CDC: `GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER_EXT`,
+	0x8CDD: `GL_FRAMEBUFFER_UNSUPPORTED_EXT`,
+	0x8D56: `FRAMEBUFFER_INCOMPLETE_MULTISAMPLE_EXT`,
+}
+
+func CheckGLFramebufferStatus() {
 	for {
-		glerr := gl.GetError()
-		if glerr == gl.NO_ERROR {
+		glstatus := gl.CheckFramebufferStatusEXT(gl.FRAMEBUFFER)
+		if glstatus == gl.FRAMEBUFFER_COMPLETE_EXT {
 			break
 		}
-		panic_GL_ERROR(glerr)
+		panic_GL_Framebuffer_STATUS(glstatus)
+	}
+}
+
+func panic_GL_Framebuffer_STATUS(statuscode uint32) {
+	if statusstr, ok := GL_FRAMEBUFFER_STATUS_LOOKUP[statuscode]; ok {
+		panic(fmt.Sprintf("GL_FRAMEBUFFER_STATUS: %s\n", statusstr))
+	} else {
+		panic(fmt.Sprintf("GL_FRAMEBUFFER_STATUS UNKNOWN: %v\n", statuscode))
 	}
 }
