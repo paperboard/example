@@ -4,19 +4,23 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"math/rand"
 	"runtime"
 	"strings"
+	"time"
 
-	"github.com/go-gl/gl/v2.1/gl"
-	"github.com/go-gl/glfw/v3.3/glfw"
+	"github.com/go-gl/gl/v3.2-core/gl"
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/paperboard/glfw/v3.3/glfw"
 )
+
+// TODO: BASIC OPTIMIZATION
+// https://paroj.github.io/gltut/Basic%20Optimization.html
 
 const (
 	windowWidth        = 600 // intended game screen width, but will become larger on high-dpi screens
 	windowHeight       = 400 // intended game screen height, but will become larger on high-dpi screens
 	bytesFloat32       = 4   // a float32 is 4 bytes
-	bytesUint32        = 4   // a uint32 is 4 bytes
 	bytesUint16        = 2   // a uint16 is 2 bytes
 	bytesUint8         = 1   // a uint8 has 1 byte
 	vertexPositionSize = 3   // x,y,z = points in 3D space
@@ -24,6 +28,7 @@ const (
 	vertexColorSize    = 4   // r,g,b,a = color w/ transparency
 	verticesPerQuad    = 4   // a rectangle has 4 vertices
 	indicesPerQuad     = 6   // a rectangle has 6 indices
+	msaaSamples        = 8   // use 8 subsamples per pixel, for multi-sample anti-aliasing (MSAA), to smooth edges
 )
 
 var (
@@ -32,8 +37,9 @@ var (
 )
 
 var (
-	ctxScreen      = &ContextScreen{}
-	ctxFramebuffer = &ContextFramebuffer{}
+	ctxScreen                 = &ContextScreen{}
+	ctxBlitz                  = &ContextFramebuffer{}
+	ctxFramebufferMultisample = &ContextFramebufferMultisample{}
 )
 
 // ContextScreen is a real screen
@@ -42,12 +48,13 @@ type ContextScreen struct {
 	program              uint32 // connects vertex and fragment shaders (Screen shaders)
 	vbo                  uint32 // stores vertex position, color, texture, and normal array data
 	ibo                  uint32 // stores sets of indicies to draw that make up elements (e.g. triangles)
+	vao                  uint32 // only need to initalize it, we never use it
 	attribVertexPosition uint32 // reference to position input for shader variable (Screen shaders)
 	attribVertexTexCoord uint32 // reference to texture coordinate input for shader variable (Screen shaders)
 }
 
-// ContextFramebuffer is a proxy screen
-type ContextFramebuffer struct {
+// ContextFramebufferMultisample is a proxy screen
+type ContextFramebufferMultisample struct {
 	quads                *ElementQuads
 	program              uint32 // connects vertex and fragment shaders (Framebuffer shaders)
 	fbo                  uint32 // off-screen rendering using framebuffer
@@ -55,9 +62,18 @@ type ContextFramebuffer struct {
 	fboRenderbuffer      uint32 // renderbuffer attachment for framebuffer depth & stencil components (to act as proxy for default framebuffer aka. screen)
 	vbo                  uint32 // stores vertex position, color, texture, and normal array data
 	ibo                  uint32 // stores sets of indicies to draw that make up elements (e.g. triangles)
+	vao                  uint32 // only need to initalize it, we never use it
 	attribVertexPosition uint32 // reference to position input for shader variable (Framebuffer shaders)
 	attribVertexTexCoord uint32 // reference to texture coordinate input for shader variable (Framebuffer shaders)
 	attribVertexColor    uint32 // reference to color input for shader variable (Framebuffer shaders)
+}
+
+// ContextFramebuffer is a single-sampled intermediate between
+// multisampled proxy screen and single sampled real screen.
+// Its function is to recieve the blitz operations downscaled pixels.
+type ContextFramebuffer struct {
+	fbo        uint32
+	fboTexture uint32
 }
 
 // ElementQuads hold draw elements used by both "real screen" (ContextScreen) and "proxy screen" (ContextFramebuffer)
@@ -75,7 +91,7 @@ type ElementQuads struct {
 	BytesTotal int
 
 	// QuadColors is only used by ContextFramebuffer
-	QuadColors   []uint32
+	QuadColors   []uint8
 	OffsetColors int
 }
 
@@ -93,13 +109,21 @@ func main() {
 	}
 	defer glfw.Terminate()
 
-	// use OpenGL v2.1
+	// suggest glfw to use OpenGL v3.2 -- NOTE: minimum required for proper support for texture anti-aliasing (multisample)
+	// https://www.khronos.org/opengl/wiki/Multisampling
+	// https://www.khronos.org/opengl/wiki/Framebuffer#Multisampling_Considerations
+	// https://developer.apple.com/opengl/OpenGL-Capabilities-Tables.pdf
+	// https://developer.nvidia.com/sites/default/files/akamai/gamedev/docs/Porting%20Source%20to%20Linux.pdf
+	// https://www.khronos.org/opengl/wiki/Common_Mistakes
+	glfw.WindowHint(glfw.ContextVersionMajor, 3)
+	glfw.WindowHint(glfw.ContextVersionMinor, 2)
+	glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
+
+	// suggest glfw to disable window resizing
 	glfw.WindowHint(glfw.Resizable, glfw.False)
-	glfw.WindowHint(glfw.ContextVersionMajor, 2)
-	glfw.WindowHint(glfw.ContextVersionMinor, 1)
 
 	// create window handle
-	window, err := glfw.CreateWindow(windowWidth, windowHeight, "Quad 3D", nil, nil)
+	window, err := glfw.CreateWindow(windowWidth, windowHeight, "Quad 3D Multisample", nil, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -133,6 +157,9 @@ func main() {
 		// draw into buffer
 		draw()
 
+		// quick hack to slow down rendering
+		time.Sleep(time.Second)
+
 		// render buffer to screen
 		window.SwapBuffers()
 
@@ -154,30 +181,17 @@ func fboSizeCallback(_ *glfw.Window, width int, height int) {
 
 func setup() {
 
-	// one-time clear screen to yellow
-	gl.ClearColor(1, 1, 0, 1)
-	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-
-	// do not render parts of shapes (pixels) that will
-	// anyhow be covered up by higher z-axis shapes (pixels)
-	// so that we are drawing pixels more efficiently
-	gl.Enable(gl.DEPTH_TEST)
-
-	// if multiple shapes have same z-value, take their
-	// draw order in account and show if possible
-	gl.DepthFunc(gl.LEQUAL)
-
-	// enable textures
-	gl.Enable(gl.TEXTURE_2D)
-
 	// prepare screen program and buffers (vbo, ibo)
 	ctxScreen.setupProgram()
 	ctxScreen.setupBuffers()
 
 	// prepare framebuffer program and buffers (vbo, ibo, fbo) and camera
-	ctxFramebuffer.setupProgram()
-	ctxFramebuffer.setupBuffers()
-	ctxFramebuffer.setupCamera(90, mgl32.Vec3{0, 0, 0.5}, mgl32.Vec3{0.1, 0.1, -1})
+	ctxFramebufferMultisample.setupProgram()
+	ctxFramebufferMultisample.setupBuffers()
+	ctxFramebufferMultisample.setupCamera(90, mgl32.Vec3{0, 0, 0.5}, mgl32.Vec3{0.1, 0.1, -1})
+
+	// prepare blitz
+	ctxBlitz.setupBuffers()
 
 }
 
@@ -220,13 +234,13 @@ func makeQuadTextureCoord() []uint8 {
 	}
 }
 
-func makeQuadColors(r, g, b, a uint32) []uint32 {
+func makeQuadColors(clr color.NRGBA) []uint8 {
 	// all 4 vertex (v0, v1, v2, v3) should have same color
-	return []uint32{
-		r, g, b, a, // v0
-		r, g, b, a, // v1
-		r, g, b, a, // v2
-		r, g, b, a, // v3
+	return []uint8{
+		clr.R, clr.G, clr.B, clr.A, // v0
+		clr.R, clr.G, clr.B, clr.A, // v1
+		clr.R, clr.G, clr.B, clr.A, // v2
+		clr.R, clr.G, clr.B, clr.A, // v3
 	}
 }
 
@@ -244,16 +258,16 @@ func (q *ElementQuads) DebugPrint() {
 	fmt.Printf("RAW_LENGTH -- Rectangle has %v vertex\nVertices   %v (%v-per-vertex)\nTexCoord   %v (%v-per-vertex)\nColors     %v (%v-per-vertex)\nIndices    %v (%v-per-rectangle)\n", verticesPerQuad, len(q.QuadVertices), vertexPositionSize, len(q.QuadTexCoords), vertexTexCoordSize, len(q.QuadColors), vertexColorSize, len(q.QuadIndices), indicesPerQuad)
 }
 
-func (q *ElementQuads) DrawRectangle(w float32, h float32, z float32, clr color.Color) {
+func (q *ElementQuads) DrawRectangle(w float32, h float32, z float32, clr color.NRGBA) {
 	q.QuadVertices = append(q.QuadVertices, makeQuadVertices(w, h, z)...)
 	q.QuadTexCoords = append(q.QuadTexCoords, makeQuadTextureCoord()...)
-	q.QuadColors = append(q.QuadColors, makeQuadColors(clr.RGBA())...)
+	q.QuadColors = append(q.QuadColors, makeQuadColors(clr)...)
 	q.QuadIndices = append(q.QuadIndices, makeQuadIndices(len(q.QuadVertices))...)
 }
 
 func load() {
 	ctxScreen.load()
-	ctxFramebuffer.load()
+	ctxFramebufferMultisample.load()
 }
 
 func (ctx *ContextScreen) load() {
@@ -283,7 +297,7 @@ func (ctx *ContextScreen) load() {
 
 }
 
-func (ctx *ContextFramebuffer) load() {
+func (ctx *ContextFramebufferMultisample) load() {
 
 	// initalize framebuffer quads
 	ctx.quads = &ElementQuads{
@@ -294,7 +308,7 @@ func (ctx *ContextFramebuffer) load() {
 		OffsetTexCoords: 0,
 		OffsetIndices:   0,
 		BytesTotal:      0, // will be calculated to the total bytes needed for VBO buffer (QuadVertices + QuadTexCoords + QuadColors)
-		QuadColors:      []uint32{},
+		QuadColors:      []uint8{},
 		OffsetColors:    0,
 	}
 
@@ -302,7 +316,7 @@ func (ctx *ContextFramebuffer) load() {
 	ctx.quads.DrawRectangle(2, 2, -1.2, color.NRGBA{1, 0, 0, 1})
 
 	// draw blue rectangle
-	ctx.quads.DrawRectangle(1, 1, -1.1, color.NRGBA{0, 0, 1, 1})
+	ctx.quads.DrawRectangle(1, 1, -1.1, color.NRGBA{0, 0, 255, 1})
 
 	// print debug info for shapes
 	ctx.quads.DebugPrint()
@@ -312,8 +326,12 @@ func (ctx *ContextFramebuffer) load() {
 func draw() {
 
 	// bind proxy offscreen (framebuffer) and draw elements
-	ctxFramebuffer.bind()
-	ctxFramebuffer.draw()
+	ctxFramebufferMultisample.bind()
+	ctxFramebufferMultisample.draw()
+
+	// TODO: comment about blitz
+	ctxBlitz.bind()
+	ctxBlitz.draw()
 
 	// bind real screen and draw rasterized texture (output from framebuffer)
 	// in other words, using the proxy screen's rendered image, overlay ontop real screen using a single quad
@@ -321,54 +339,92 @@ func draw() {
 	ctxScreen.draw()
 
 	// check for accumulated OpenGL errors
-	checkGLError()
+	//CheckGLError()
 
 }
 
 // use proxy offscreen for rendering using framebuffers
-func (ctx *ContextFramebuffer) bind() {
+func (ctx *ContextFramebufferMultisample) bind() {
+
+	// bind proxy framebuffer instead of default framebuffer
+	gl.BindFramebuffer(gl.FRAMEBUFFER, ctx.fbo)
+	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, ctx.fbo)
+	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, ctx.fbo)
 
 	// bind Framebuffer program
 	gl.UseProgram(ctx.program)
 
-	// bind proxy framebuffer instead of default framebuffer
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, ctx.fbo)
-
 	// clear proxy screen to gray
-	gl.ClearColor(0.5, 0.5, 0.5, 1) // TODO: can set this once during creation instead of each bind
+	gl.ClearColor(0.5, 0.5, 0.5, 0) // ALPHA = 0 is a must for anti-aliasing
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
 	// ensure depth test is enabled during proxy screen usage
 	gl.Enable(gl.DEPTH_TEST)
+
+	// enable multisample
+	gl.Enable(gl.MULTISAMPLE)
 
 }
 
 // use default (real) screen for rendering
 func (ctx *ContextScreen) bind() {
 
+	// unbind proxy framebuffer and set back to default framebuffer
+	gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, 0)
+	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, 0)
+
 	// bind Screen program
 	gl.UseProgram(ctx.program)
 
-	// unbind proxy framebuffer and set back to default framebuffer
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
-
 	// clear screen to black
-	gl.ClearColor(0, 0, 0, 1)     // TODO: can set this once during creation instead of each bind
+	gl.ClearColor(0, 0, 0, 0)     // ALPHA = 0 is a must for anti-aliasing
 	gl.Clear(gl.COLOR_BUFFER_BIT) // no need to clear depth, we will disable depth
 
 	// disable depth test
-	gl.Disable(gl.DEPTH_TEST)
+	gl.Disable(gl.DEPTH_TEST) // must disable depth-test for anti-aliasing
+
+	// enable multisample
+	gl.Enable(gl.MULTISAMPLE)
+
+}
+
+func (ctx *ContextFramebuffer) bind() {
+
+	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, ctxFramebufferMultisample.fbo)
+	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, ctx.fbo)
+	gl.FramebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D_MULTISAMPLE, ctxFramebufferMultisample.fboTexture, 0)
+	gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
 
 }
 
 func (ctx *ContextFramebuffer) draw() {
 
+	windowWidthHDPI := windowWidth * int32(dpiScaleX)
+	windowHeightHDPI := windowHeight * int32(dpiScaleY)
+
+	gl.BlitFramebuffer(0, 0, windowWidthHDPI, windowHeightHDPI, 0, 0, windowWidthHDPI, windowHeightHDPI, gl.COLOR_BUFFER_BIT, gl.NEAREST)
+
+}
+
+func (ctx *ContextFramebufferMultisample) draw() {
+
 	// gl.Begin()
-	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)              // bind vertex buffer
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)      // bind indices buffer
-	gl.EnableVertexAttribArray(ctx.attribVertexPosition) // enable vertex position
-	gl.EnableVertexAttribArray(ctx.attribVertexTexCoord) // enable vertex texture coordinate
-	gl.EnableVertexAttribArray(ctx.attribVertexColor)    // enable vertex color
+	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)                                         // bind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)                                 // bind indices buffer
+	gl.ActiveTexture(gl.TEXTURE0)                                                   //
+	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, ctxFramebufferMultisample.fboTexture) // bind shared texture
+	gl.EnableVertexAttribArray(ctx.attribVertexPosition)                            // enable vertex position
+	gl.EnableVertexAttribArray(ctx.attribVertexTexCoord)                            // enable vertex texture coordinate
+	gl.EnableVertexAttribArray(ctx.attribVertexColor)                               // enable vertex color
+
+	// randomize color values for each rectangle in draw queue
+	nQuads := len(ctx.quads.QuadIndices) / indicesPerQuad
+	ctx.quads.QuadColors = []uint8{}
+	for i := 0; i < nQuads; i++ {
+		ctx.quads.QuadColors = append(ctx.quads.QuadColors, makeQuadColors(RandomColorInRGBA())...)
+	}
+	gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetColors, len(ctx.quads.QuadColors)*bytesUint8, gl.Ptr(ctx.quads.QuadColors)) // copy colors after textures
 
 	// configure and enable vertex position
 	gl.VertexAttribPointer(ctx.attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(ctx.quads.OffsetVertices))
@@ -377,7 +433,7 @@ func (ctx *ContextFramebuffer) draw() {
 	gl.VertexAttribPointer(ctx.attribVertexTexCoord, vertexTexCoordSize, gl.UNSIGNED_BYTE, false, 0, gl.PtrOffset(ctx.quads.OffsetTexCoords))
 
 	// configure and enable vertex color
-	gl.VertexAttribPointer(ctx.attribVertexColor, vertexColorSize, gl.UNSIGNED_INT, false, 0, gl.PtrOffset(ctx.quads.OffsetColors))
+	gl.VertexAttribPointer(ctx.attribVertexColor, vertexColorSize, gl.UNSIGNED_BYTE, true, 0, gl.PtrOffset(ctx.quads.OffsetColors))
 
 	// draw rectangles
 	gl.DrawElements(gl.TRIANGLES, int32(len(ctx.quads.QuadIndices)), gl.UNSIGNED_SHORT, gl.PtrOffset(ctx.quads.OffsetIndices))
@@ -385,20 +441,32 @@ func (ctx *ContextFramebuffer) draw() {
 	// gl.End()
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                     // unbind vertex buffer
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)             // unbind indices buffer
+	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, 0)          // unbind texture
 	gl.DisableVertexAttribArray(ctx.attribVertexPosition) // disable vertex position
 	gl.DisableVertexAttribArray(ctx.attribVertexTexCoord) // disable vertex texture coordinate
 	gl.DisableVertexAttribArray(ctx.attribVertexColor)    // disable vertex color
 
 }
 
+// RandomColorInRGB
+func RandomColorInRGBA() color.NRGBA {
+	rand.Seed(time.Now().UnixNano())
+	r := uint8(rand.Intn(0xff))
+	g := uint8(rand.Intn(0xff))
+	b := uint8(rand.Intn(0xff))
+	a := uint8(1)
+	return color.NRGBA{r, g, b, a}
+}
+
 func (ctx *ContextScreen) draw() {
 
 	// gl.Begin()
-	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)                  // bind vertex buffer
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)          // bind indices buffer
-	gl.BindTexture(gl.TEXTURE_2D, ctxFramebuffer.fboTexture) // bind shared texture from Framebuffer-FBO (proxy screen) to Screen-FBO (real screen)
-	gl.EnableVertexAttribArray(ctx.attribVertexPosition)     // enable vertex position
-	gl.EnableVertexAttribArray(ctx.attribVertexTexCoord)     // enable vertex texture coordinate
+	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)              // bind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)      // bind indices buffer
+	gl.ActiveTexture(gl.TEXTURE0)                        //
+	gl.BindTexture(gl.TEXTURE_2D, ctxBlitz.fboTexture)   // bind to downsampled shared texture
+	gl.EnableVertexAttribArray(ctx.attribVertexPosition) // enable vertex position
+	gl.EnableVertexAttribArray(ctx.attribVertexTexCoord) // enable vertex texture coordinate
 
 	// configure and enable vertex position
 	gl.VertexAttribPointer(ctx.attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(ctx.quads.OffsetVertices))
@@ -418,13 +486,30 @@ func (ctx *ContextScreen) draw() {
 
 }
 
+func (ctx *ContextFramebuffer) setupBuffers() {
+
+	// create FBO and bind to it
+	gl.GenFramebuffers(1, &ctx.fbo)
+	gl.BindFramebuffer(gl.FRAMEBUFFER, ctx.fbo)
+
+	// attach texture to FBO (color buffer component)
+	ctx.attachTexture()
+
+	// check if FBO is ready and valid
+	CheckGLFramebufferStatus()
+
+	// unbind FBO
+	gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+
+}
+
 func (ctx *ContextScreen) setupBuffers() {
 
 	// use SCREEN program
 	gl.UseProgram(ctx.program)
 
 	// unbind FBO
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
+	gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
 
 	// to be more efficient, vertices position are in float32 and texture coordinate in uint8
 	ctx.quads.BytesTotal = (len(ctx.quads.QuadVertices) * bytesFloat32) + (len(ctx.quads.QuadTexCoords) * bytesUint8)
@@ -435,6 +520,10 @@ func (ctx *ContextScreen) setupBuffers() {
 
 	// ibo data offsets
 	ctx.quads.OffsetIndices = 0 * bytesUint16
+
+	// create and bind VAO
+	gl.GenVertexArrays(1, &ctx.vao)
+	gl.BindVertexArray(ctx.vao)
 
 	// create VBOs
 	gl.GenBuffers(1, &ctx.vbo) // buffer for vertex position and texture coordinate
@@ -452,6 +541,14 @@ func (ctx *ContextScreen) setupBuffers() {
 	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(ctx.quads.QuadIndices)*bytesUint16, gl.Ptr(ctx.quads.QuadIndices), gl.STATIC_DRAW)
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
+	// -------------------------
+	// one-time global settings
+	// -------------------------
+
+	// if multiple shapes have same z-value, take their
+	// draw order in account and show if possible
+	gl.DepthFunc(gl.LEQUAL)
+
 	// unbind SCREEN program
 	gl.UseProgram(0)
 
@@ -460,13 +557,13 @@ func (ctx *ContextScreen) setupBuffers() {
 // https://en.wikipedia.org/wiki/Vertex_buffer_object
 // https://www.songho.ca/opengl/gl_vbo.html#create
 // https://learnopengl.com/Advanced-OpenGL/Framebuffers
-func (ctx *ContextFramebuffer) setupBuffers() {
+func (ctx *ContextFramebufferMultisample) setupBuffers() {
 
 	// use PROXY program
 	gl.UseProgram(ctx.program)
 
-	// to be more efficient, vertices position are in float32, texture coordinate in uint8, and color is in uint32
-	ctx.quads.BytesTotal = (len(ctx.quads.QuadVertices) * bytesFloat32) + (len(ctx.quads.QuadTexCoords) * bytesUint8) + (len(ctx.quads.QuadColors) * bytesUint32)
+	// to be more efficient, vertices position are in float32, texture coordinate in uint8, and color is in uint8
+	ctx.quads.BytesTotal = (len(ctx.quads.QuadVertices) * bytesFloat32) + (len(ctx.quads.QuadTexCoords) * bytesUint8) + (len(ctx.quads.QuadColors) * bytesUint8)
 
 	// vbo data offsets
 	ctx.quads.OffsetVertices = 0 * bytesFloat32
@@ -477,19 +574,21 @@ func (ctx *ContextFramebuffer) setupBuffers() {
 	ctx.quads.OffsetIndices = 0 * bytesUint16
 
 	// create FBO and bind to it
-	gl.GenFramebuffersEXT(1, &ctx.fbo) // offscreen rendering use framebuffer extension
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, ctx.fbo)
+	gl.GenFramebuffers(1, &ctx.fbo) // offscreen rendering use framebuffer extension
+	gl.BindFramebuffer(gl.FRAMEBUFFER, ctx.fbo)
 
 	// attach texture to FBO (color buffer component)
-	ctx.attachTexture()
+	ctx.attachTextureMultisample()
 
 	/// attach renderbuffer to FBO (combined depth and stencil buffer component)
-	ctx.attachRenderbuffer()
+	ctx.attachRenderbufferMultisample()
 
 	// check if FBO is ready and valid
-	if gl.CheckFramebufferStatusEXT(gl.FRAMEBUFFER_EXT) != gl.FRAMEBUFFER_COMPLETE_EXT {
-		panic("Framebuffer (FBO) FATAL ERROR")
-	}
+	CheckGLFramebufferStatus()
+
+	// create and bind VAO
+	gl.GenVertexArrays(1, &ctx.vao)
+	gl.BindVertexArray(ctx.vao)
 
 	// create VBOs
 	gl.GenBuffers(1, &ctx.vbo) // buffer for vertex position, texture coordinate, and color
@@ -500,7 +599,7 @@ func (ctx *ContextFramebuffer) setupBuffers() {
 	gl.BufferData(gl.ARRAY_BUFFER, ctx.quads.BytesTotal, nil, gl.STATIC_DRAW)                                                              // initalize but do not copy any data
 	gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetVertices, len(ctx.quads.QuadVertices)*bytesFloat32, gl.Ptr(ctx.quads.QuadVertices))  // copy vertices starting from 0 offest
 	gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetTexCoords, len(ctx.quads.QuadTexCoords)*bytesUint8, gl.Ptr(ctx.quads.QuadTexCoords)) // copy textures after vertices
-	gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetColors, len(ctx.quads.QuadColors)*bytesUint32, gl.Ptr(ctx.quads.QuadColors))         // copy colors after textures
+	gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetColors, len(ctx.quads.QuadColors)*bytesUint8, gl.Ptr(ctx.quads.QuadColors))          // copy colors after textures
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)
 
 	// copy index data to VBO
@@ -509,19 +608,15 @@ func (ctx *ContextFramebuffer) setupBuffers() {
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
 	// unbind FBO
-	gl.BindFramebufferEXT(gl.FRAMEBUFFER_EXT, 0)
+	gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
 
 	// unbind PROXY program
 	gl.UseProgram(0)
 
 }
 
-// http://www.songho.ca/opengl/gl_fbo.html
 func (ctx *ContextFramebuffer) attachTexture() {
 
-	// create texture for framebuffer attachment, and bind to it
-	// NOTE: a texture can be attached to multiple FBOs, where its image storage is shared
-	//       this is an important, we use it to render the final drawn texture from Framebuffer-FBO to Screen-FBO.
 	gl.GenTextures(1, &ctx.fboTexture)
 	gl.BindTexture(gl.TEXTURE_2D, ctx.fboTexture)
 
@@ -530,30 +625,49 @@ func (ctx *ContextFramebuffer) attachTexture() {
 	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
 	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
-	// attach texture to framebuffer
-	gl.FramebufferTexture2DEXT(gl.FRAMEBUFFER_EXT, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
+	// unbind texture
+	gl.BindTexture(gl.TEXTURE_2D, 0)
 
-	// NOTE: do not unbind texture for this framebuffer
-	// remember, each "screen" has its own state machine, and therefore
-	// we can leave this texture always binded
+	// attach texture to framebuffer
+	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
 
 }
 
 // http://www.songho.ca/opengl/gl_fbo.html
-func (ctx *ContextFramebuffer) attachRenderbuffer() {
+func (ctx *ContextFramebufferMultisample) attachTextureMultisample() {
+
+	// create texture for framebuffer attachment, and bind to it
+	// NOTE: a texture can be attached to multiple FBOs, where its image storage is shared
+	//       this is an important, we use it to render the final drawn texture from Framebuffer-FBO to Screen-FBO.
+	gl.GenTextures(1, &ctx.fboTexture)
+	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, ctx.fboTexture)
+
+	// initalize texture (memory space and min/mag filters)
+	gl.TexImage2DMultisample(gl.TEXTURE_2D_MULTISAMPLE, msaaSamples, gl.RGBA, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY), true)
+
+	// unbind texture
+	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, 0)
+
+	// attach texture to framebuffer
+	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D_MULTISAMPLE, ctx.fboTexture, 0)
+
+}
+
+// http://www.songho.ca/opengl/gl_fbo.html
+func (ctx *ContextFramebufferMultisample) attachRenderbufferMultisample() {
 
 	// create renderbuffer for depth and stencil testing. and bind to it
-	gl.GenRenderbuffersEXT(1, &ctx.fboRenderbuffer)
-	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, ctx.fboRenderbuffer)
+	gl.GenRenderbuffers(1, &ctx.fboRenderbuffer)
+	gl.BindRenderbuffer(gl.RENDERBUFFER, ctx.fboRenderbuffer)
 
 	// initalize renderbuffer memory space
-	gl.RenderbufferStorageEXT(gl.RENDERBUFFER_EXT, gl.DEPTH24_STENCIL8, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY))
+	gl.RenderbufferStorageMultisample(gl.RENDERBUFFER, msaaSamples, gl.DEPTH24_STENCIL8, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY))
 
 	// unbind renderbuffer
-	gl.BindRenderbufferEXT(gl.RENDERBUFFER_EXT, 0)
+	gl.BindRenderbuffer(gl.RENDERBUFFER, 0)
 
 	// attach renderbuffer to framebuffer
-	gl.FramebufferRenderbufferEXT(gl.FRAMEBUFFER_EXT, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER_EXT, ctx.fboRenderbuffer)
+	gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, ctx.fboRenderbuffer)
 
 }
 
@@ -580,7 +694,7 @@ func (ctx *ContextScreen) setupProgram() {
 
 }
 
-func (ctx *ContextFramebuffer) setupProgram() {
+func (ctx *ContextFramebufferMultisample) setupProgram() {
 
 	var err error
 
@@ -641,7 +755,7 @@ func (ctx *ContextFramebuffer) setupProgram() {
 // https://learnopengl.com/Getting-started/Camera
 // https://stackoverflow.com/questions/59262874/how-can-i-use-screen-space-coordinates-directly-with-opengl
 // https://www.codeguru.com/cpp/misc/misc/graphics/article.php/c10123/Deriving-Projection-Matrices.htm#page-2
-func (ctx *ContextFramebuffer) setupCamera(fov float32, cameraposition mgl32.Vec3, target mgl32.Vec3) {
+func (ctx *ContextFramebufferMultisample) setupCamera(fov float32, cameraposition mgl32.Vec3, target mgl32.Vec3) {
 
 	// use PROXY program
 	gl.UseProgram(ctx.program)
@@ -670,7 +784,7 @@ func (ctx *ContextFramebuffer) setupCamera(fov float32, cameraposition mgl32.Vec
 }
 
 var vertexShaderFramebuffer = `
-#version 120
+#version 150
 
 // input
 uniform mat4 projection;
@@ -678,13 +792,13 @@ uniform mat4 camera;
 uniform mat4 model;
 
 // input
-attribute vec3 vertexPosition;
-attribute vec2 vertexTexCoord;
-attribute vec4 vertexColor;
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec4 vertexColor;
 
 // output
-varying vec2 fragmentTexCoord;
-varying vec4 fragmentColor;
+out vec2 fragmentTexCoord;
+out vec4 fragmentColor;
 
 void main() {
 	fragmentTexCoord = vertexTexCoord;
@@ -694,26 +808,29 @@ void main() {
 ` + "\x00"
 
 var fragmentShaderFramebuffer = `
-#version 120
+#version 150
 
 // input
-varying vec2 fragmentTexCoord;
-varying vec4 fragmentColor;
+in vec2 fragmentTexCoord;
+in vec4 fragmentColor;
+
+// output
+out vec4 FragColor;
 
 void main() {
-	gl_FragColor = fragmentColor;
+	FragColor = fragmentColor;
 }
 ` + "\x00"
 
 var vertexShaderScreen = `
-#version 120
+#version 150
 
 // input
-attribute vec2 vertexPosition; // z-axis discarded
-attribute vec2 vertexTexCoord;
+in vec2 vertexPosition; // z-axis discarded
+in vec2 vertexTexCoord;
 
 // output
-varying vec2 fragmentTexCoord;
+out vec2 fragmentTexCoord;
 
 void main() {
 	fragmentTexCoord = vertexTexCoord;
@@ -722,16 +839,19 @@ void main() {
 ` + "\x00"
 
 var fragmentShaderScreen = `
-#version 120
+#version 150
 
 // input
-uniform sampler2D screenTexture;
+uniform sampler2D downsampledTexture;
 
 // input
-varying vec2 fragmentTexCoord;
+in vec2 fragmentTexCoord;
+
+// output
+out vec4 FragColor;
 
 void main() {
-	gl_FragColor = texture2D(screenTexture, fragmentTexCoord);
+	FragColor = texture(downsampledTexture, fragmentTexCoord);
 }
 ` + "\x00"
 
@@ -812,6 +932,16 @@ var GL_ERROR_LOOKUP = map[uint32]string{
 	0x507: `GL_CONTEXT_LOST`,
 }
 
+func CheckGLError() {
+	for {
+		glerr := gl.GetError()
+		if glerr == gl.NO_ERROR {
+			break
+		}
+		panic_GL_ERROR(glerr)
+	}
+}
+
 func panic_GL_ERROR(errcode uint32) {
 	if errstr, ok := GL_ERROR_LOOKUP[errcode]; ok {
 		panic(fmt.Sprintf("GL_ERROR: %s\n", errstr))
@@ -820,12 +950,33 @@ func panic_GL_ERROR(errcode uint32) {
 	}
 }
 
-func checkGLError() {
+var GL_FRAMEBUFFER_STATUS_LOOKUP = map[uint32]string{
+	0x8CD5: `GL_FRAMEBUFFER_COMPLETE`,
+	0x8CD6: `GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT`,
+	0x8CD7: `GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT`,
+	0x8CD9: `GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS`,
+	0x8CDA: `GL_FRAMEBUFFER_INCOMPLETE_FORMATS`,
+	0x8CDB: `GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER`,
+	0x8CDC: `GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER`,
+	0x8CDD: `GL_FRAMEBUFFER_UNSUPPORTED`,
+	0x8D56: `GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE`,
+	0x8219: `GL_FRAMEBUFFER_UNDEFINED`,
+}
+
+func CheckGLFramebufferStatus() {
 	for {
-		glerr := gl.GetError()
-		if glerr == gl.NO_ERROR {
+		glstatus := gl.CheckFramebufferStatus(gl.FRAMEBUFFER)
+		if glstatus == gl.FRAMEBUFFER_COMPLETE {
 			break
 		}
-		panic_GL_ERROR(glerr)
+		panic_GL_Framebuffer_STATUS(glstatus)
+	}
+}
+
+func panic_GL_Framebuffer_STATUS(statuscode uint32) {
+	if statusstr, ok := GL_FRAMEBUFFER_STATUS_LOOKUP[statuscode]; ok {
+		panic(fmt.Sprintf("GL_FRAMEBUFFER_STATUS: %s\n", statusstr))
+	} else {
+		panic(fmt.Sprintf("GL_FRAMEBUFFER_STATUS UNKNOWN: %v\n", statuscode))
 	}
 }
