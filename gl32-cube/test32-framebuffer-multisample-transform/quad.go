@@ -158,7 +158,7 @@ func main() {
 		draw()
 
 		// quick hack to slow down rendering
-		time.Sleep(time.Second)
+		//time.Sleep(10 * time.Millisecond)
 
 		// render buffer to screen
 		window.SwapBuffers()
@@ -313,7 +313,7 @@ func (ctx *ContextFramebufferMultisample) load() {
 	}
 
 	// draw red rectangle
-	ctx.quads.DrawRectangle(2, 2, -1.2, color.NRGBA{1, 0, 0, 1})
+	ctx.quads.DrawRectangle(2, 2, -1.2, color.NRGBA{255, 0, 0, 1})
 
 	// draw blue rectangle
 	ctx.quads.DrawRectangle(1, 1, -1.1, color.NRGBA{0, 0, 255, 1})
@@ -409,6 +409,12 @@ func (ctx *ContextFramebuffer) draw() {
 
 func (ctx *ContextFramebufferMultisample) draw() {
 
+	// TODO: temporary code
+	loopDurationUniform := gl.GetUniformLocation(ctx.program, gl.Str("loopDuration\x00"))
+	gl.Uniform1f(loopDurationUniform, 5)
+	timeUniform := gl.GetUniformLocation(ctx.program, gl.Str("time\x00"))
+	gl.Uniform1f(timeUniform, float32(glfw.GetTime()))
+
 	// gl.Begin()
 	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)                                         // bind vertex buffer
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)                                 // bind indices buffer
@@ -419,12 +425,14 @@ func (ctx *ContextFramebufferMultisample) draw() {
 	gl.EnableVertexAttribArray(ctx.attribVertexColor)                               // enable vertex color
 
 	// randomize color values for each rectangle in draw queue
-	nQuads := len(ctx.quads.QuadIndices) / indicesPerQuad
-	ctx.quads.QuadColors = []uint8{}
-	for i := 0; i < nQuads; i++ {
-		ctx.quads.QuadColors = append(ctx.quads.QuadColors, makeQuadColors(RandomColorInRGBA())...)
-	}
-	gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetColors, len(ctx.quads.QuadColors)*bytesUint8, gl.Ptr(ctx.quads.QuadColors)) // copy colors after textures
+	/*
+		nQuads := len(ctx.quads.QuadIndices) / indicesPerQuad
+		ctx.quads.QuadColors = []uint8{}
+		for i := 0; i < nQuads; i++ {
+			ctx.quads.QuadColors = append(ctx.quads.QuadColors, makeQuadColors(RandomColorInRGBA())...)
+		}
+		gl.BufferSubData(gl.ARRAY_BUFFER, ctx.quads.OffsetColors, len(ctx.quads.QuadColors)*bytesUint8, gl.Ptr(ctx.quads.QuadColors)) // copy colors after textures
+	*/
 
 	// configure and enable vertex position
 	gl.VertexAttribPointer(ctx.attribVertexPosition, vertexPositionSize, gl.FLOAT, false, 0, gl.PtrOffset(ctx.quads.OffsetVertices))
@@ -792,6 +800,10 @@ uniform mat4 camera;
 uniform mat4 model;
 
 // input
+uniform float loopDuration;
+uniform float time;
+
+// input
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 in vec4 vertexColor;
@@ -801,9 +813,23 @@ out vec2 fragmentTexCoord;
 out vec4 fragmentColor;
 
 void main() {
+
+    float timeScale = 3.14159f * 2.0f / loopDuration;
+    
+    float currTime = mod(time, loopDuration);
+    vec4 vertexTransform = vec4(
+        cos(currTime * timeScale) * 0.5f,
+        sin(currTime * timeScale) * 0.5f,
+        0.0f,
+        0.0f);
+    
+    vec4 transformedPosition = vec4(vertexPosition, 1) + vertexTransform;
+	gl_Position = projection * camera * model * transformedPosition;
+
+	// passthrough texture and color values to fragment shader
 	fragmentTexCoord = vertexTexCoord;
 	fragmentColor = vertexColor;
-	gl_Position = projection * camera * model * vec4(vertexPosition, 1);
+
 }
 ` + "\x00"
 
