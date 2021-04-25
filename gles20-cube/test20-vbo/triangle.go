@@ -5,7 +5,7 @@ import (
 	"log"
 	"runtime"
 
-	"github.com/go-gl/gl/v2.1/gl"
+	gl "github.com/go-gl/gl/v3.1/gles2"
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
 
