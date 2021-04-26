@@ -120,10 +120,10 @@ func main() {
 	//glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
 
 	// use OpenGL ES v2.0
+	glfw.WindowHint(glfw.ClientAPI, glfw.OpenGLESAPI)
 	glfw.WindowHint(glfw.ContextCreationAPI, glfw.EGLContextAPI)
 	glfw.WindowHint(glfw.ContextVersionMajor, 2)
 	glfw.WindowHint(glfw.ContextVersionMinor, 0)
-	glfw.WindowHint(glfw.ClientAPI, glfw.OpenGLESAPI)
 
 	// suggest glfw to disable window resizing
 	glfw.WindowHint(glfw.Resizable, glfw.False)
@@ -583,11 +583,15 @@ func (ctx *ContextFramebufferMultisample) setupBuffers() {
 	gl.GenFramebuffers(1, &ctx.fbo) // offscreen rendering use framebuffer extension
 	gl.BindFramebuffer(gl.FRAMEBUFFER, ctx.fbo)
 
-	// attach texture to FBO (color buffer component)
-	ctx.attachTextureMultisample()
+	CheckGLError()
 
 	/// attach renderbuffer to FBO (combined depth and stencil buffer component)
 	ctx.attachRenderbufferMultisample()
+
+	CheckGLError()
+
+	// attach texture to FBO (color buffer component)
+	ctx.attachTextureMultisample()
 
 	// check if FBO is ready and valid
 	CheckGLFramebufferStatus()
@@ -642,30 +646,26 @@ func (ctx *ContextFramebuffer) attachTexture() {
 // http://www.songho.ca/opengl/gl_fbo.html
 func (ctx *ContextFramebufferMultisample) attachTextureMultisample() {
 
-	// create texture for framebuffer attachment, and bind to it
-	// NOTE: a texture can be attached to multiple FBOs, where its image storage is shared
-	//       this is an important, we use it to render the final drawn texture from Framebuffer-FBO to Screen-FBO.
 	gl.GenTextures(1, &ctx.fboTexture)
-	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, ctx.fboTexture)
+	gl.BindTexture(gl.TEXTURE_2D, ctx.fboTexture)
 
-	CheckGLError()
+	var samples int32
+	gl.GetIntegerv(gl.MAX_SAMPLES_ANGLE, &samples)
+	fmt.Println("MAX_SAMPLES_ANGLE", samples)
 
 	// initalize texture (memory space and min/mag filters)
-	//gl.TexImage2DMultisample(gl.TEXTURE_2D_MULTISAMPLE, msaaSamples, gl.RGBA, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY), true)
-	// ::: NEW SPEC FOR GLES v2 ::: https://github.com/KhronosGroup/OpenGL-API/issues/27
-	//gl.TexStorage2DMultisample(gl.TEXTURE_2D_MULTISAMPLE, msaaSamples, gl.RGBA, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY), true)
-
-	CheckGLError()
+	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGB, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY), 0, gl.RGB, gl.UNSIGNED_BYTE, nil)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
 	// unbind texture
-	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, 0)
+	gl.BindTexture(gl.TEXTURE_2D, 0)
 
 	CheckGLError()
 
 	// attach texture to framebuffer
-	//gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D_MULTISAMPLE, ctx.fboTexture, 0)
-	// ::: NEW SPEC FOR GLES v2 ::: https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_multisampled_render_to_texture.txt
-	gl.FramebufferTexture2DMultisampleEXT(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D_MULTISAMPLE, ctx.fboTexture, 0, msaaSamples)
+	// https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_multisampled_render_to_texture.txt
+	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
 
 	CheckGLError()
 
@@ -678,14 +678,26 @@ func (ctx *ContextFramebufferMultisample) attachRenderbufferMultisample() {
 	gl.GenRenderbuffers(1, &ctx.fboRenderbuffer)
 	gl.BindRenderbuffer(gl.RENDERBUFFER, ctx.fboRenderbuffer)
 
+	CheckGLError()
+
+	var samples int32
+	gl.GetIntegerv(gl.MAX_DEPTH_TEXTURE_SAMPLES, &samples)
+	fmt.Println("MAX_DEPTH_TEXTURE_SAMPLES", samples)
+
 	// initalize renderbuffer memory space
-	gl.RenderbufferStorageMultisampleEXT(gl.RENDERBUFFER, msaaSamples, gl.DEPTH24_STENCIL8, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY))
+	gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, windowWidth*int32(dpiScaleX), windowHeight*int32(dpiScaleY))
+
+	CheckGLError()
 
 	// unbind renderbuffer
 	gl.BindRenderbuffer(gl.RENDERBUFFER, 0)
 
+	CheckGLError()
+
 	// attach renderbuffer to framebuffer
-	gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, ctx.fboRenderbuffer)
+	gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, ctx.fboRenderbuffer)
+
+	CheckGLError()
 
 }
 
