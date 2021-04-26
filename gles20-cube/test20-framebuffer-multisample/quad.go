@@ -353,7 +353,7 @@ func draw() {
 func (ctx *ContextFramebufferMultisample) bind() {
 
 	// bind proxy framebuffer instead of default framebuffer
-	gl.BindFramebuffer(gl.FRAMEBUFFER, ctx.fbo)
+	//gl.BindFramebuffer(gl.FRAMEBUFFER, ctx.fbo)
 	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, ctx.fbo)
 	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, ctx.fbo)
 
@@ -368,7 +368,7 @@ func (ctx *ContextFramebufferMultisample) bind() {
 	gl.Enable(gl.DEPTH_TEST)
 
 	// enable multisample
-	gl.Enable(gl.MULTISAMPLE_EXT)
+	//gl.Enable(gl.MULTISAMPLE_EXT)
 
 }
 
@@ -376,7 +376,7 @@ func (ctx *ContextFramebufferMultisample) bind() {
 func (ctx *ContextScreen) bind() {
 
 	// unbind proxy framebuffer and set back to default framebuffer
-	gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+	//gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
 	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, 0)
 	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, 0)
 
@@ -390,8 +390,8 @@ func (ctx *ContextScreen) bind() {
 	// disable depth test
 	gl.Disable(gl.DEPTH_TEST) // must disable depth-test for anti-aliasing
 
-	// enable multisample
-	gl.Enable(gl.MULTISAMPLE_EXT)
+	// disable multisample
+	//gl.Disable(gl.MULTISAMPLE_EXT)
 
 }
 
@@ -399,7 +399,7 @@ func (ctx *ContextFramebuffer) bind() {
 
 	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, ctxFramebufferMultisample.fbo)
 	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, ctx.fbo)
-	gl.FramebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D_MULTISAMPLE, ctxFramebufferMultisample.fboTexture, 0)
+	gl.FramebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctxFramebufferMultisample.fboTexture, 0)
 	gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
 
 }
@@ -416,13 +416,13 @@ func (ctx *ContextFramebuffer) draw() {
 func (ctx *ContextFramebufferMultisample) draw() {
 
 	// gl.Begin()
-	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)                                         // bind vertex buffer
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)                                 // bind indices buffer
-	gl.ActiveTexture(gl.TEXTURE0)                                                   //
-	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, ctxFramebufferMultisample.fboTexture) // bind shared texture
-	gl.EnableVertexAttribArray(ctx.attribVertexPosition)                            // enable vertex position
-	gl.EnableVertexAttribArray(ctx.attribVertexTexCoord)                            // enable vertex texture coordinate
-	gl.EnableVertexAttribArray(ctx.attribVertexColor)                               // enable vertex color
+	gl.BindBuffer(gl.ARRAY_BUFFER, ctx.vbo)                             // bind vertex buffer
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ctx.ibo)                     // bind indices buffer
+	gl.ActiveTexture(gl.TEXTURE0)                                       //
+	gl.BindTexture(gl.TEXTURE_2D, ctxFramebufferMultisample.fboTexture) // bind shared texture
+	gl.EnableVertexAttribArray(ctx.attribVertexPosition)                // enable vertex position
+	gl.EnableVertexAttribArray(ctx.attribVertexTexCoord)                // enable vertex texture coordinate
+	gl.EnableVertexAttribArray(ctx.attribVertexColor)                   // enable vertex color
 
 	// randomize color values for each rectangle in draw queue
 	nQuads := len(ctx.quads.QuadIndices) / indicesPerQuad
@@ -447,7 +447,7 @@ func (ctx *ContextFramebufferMultisample) draw() {
 	// gl.End()
 	gl.BindBuffer(gl.ARRAY_BUFFER, 0)                     // unbind vertex buffer
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)             // unbind indices buffer
-	gl.BindTexture(gl.TEXTURE_2D_MULTISAMPLE, 0)          // unbind texture
+	gl.BindTexture(gl.TEXTURE_2D, 0)                      // unbind texture
 	gl.DisableVertexAttribArray(ctx.attribVertexPosition) // disable vertex position
 	gl.DisableVertexAttribArray(ctx.attribVertexTexCoord) // disable vertex texture coordinate
 	gl.DisableVertexAttribArray(ctx.attribVertexColor)    // disable vertex color
@@ -496,7 +496,7 @@ func (ctx *ContextFramebuffer) setupBuffers() {
 
 	// create FBO and bind to it
 	gl.GenFramebuffers(1, &ctx.fbo)
-	gl.BindFramebuffer(gl.FRAMEBUFFER, ctx.fbo)
+	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, ctx.fbo)
 
 	// attach texture to FBO (color buffer component)
 	ctx.attachTexture()
@@ -505,7 +505,7 @@ func (ctx *ContextFramebuffer) setupBuffers() {
 	CheckGLFramebufferStatus()
 
 	// unbind FBO
-	gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, 0)
 
 }
 
@@ -515,7 +515,7 @@ func (ctx *ContextScreen) setupBuffers() {
 	gl.UseProgram(ctx.program)
 
 	// unbind FBO
-	gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, 0)
 
 	// to be more efficient, vertices position are in float32 and texture coordinate in uint8
 	ctx.quads.BytesTotal = (len(ctx.quads.QuadVertices) * bytesFloat32) + (len(ctx.quads.QuadTexCoords) * bytesUint8)
@@ -581,7 +581,7 @@ func (ctx *ContextFramebufferMultisample) setupBuffers() {
 
 	// create FBO and bind to it
 	gl.GenFramebuffers(1, &ctx.fbo) // offscreen rendering use framebuffer extension
-	gl.BindFramebuffer(gl.FRAMEBUFFER, ctx.fbo)
+	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, ctx.fbo)
 
 	CheckGLError()
 
@@ -618,7 +618,7 @@ func (ctx *ContextFramebufferMultisample) setupBuffers() {
 	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, 0)
 
 	// unbind FBO
-	gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, 0)
 
 	// unbind PROXY program
 	gl.UseProgram(0)
@@ -639,7 +639,7 @@ func (ctx *ContextFramebuffer) attachTexture() {
 	gl.BindTexture(gl.TEXTURE_2D, 0)
 
 	// attach texture to framebuffer
-	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
+	gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
 
 }
 
@@ -665,7 +665,7 @@ func (ctx *ContextFramebufferMultisample) attachTextureMultisample() {
 
 	// attach texture to framebuffer
 	// https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_multisampled_render_to_texture.txt
-	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
+	gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.fboTexture, 0)
 
 	CheckGLError()
 
@@ -695,7 +695,7 @@ func (ctx *ContextFramebufferMultisample) attachRenderbufferMultisample() {
 	CheckGLError()
 
 	// attach renderbuffer to framebuffer
-	gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, ctx.fboRenderbuffer)
+	gl.FramebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, ctx.fboRenderbuffer)
 
 	CheckGLError()
 
